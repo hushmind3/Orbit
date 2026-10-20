@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 // All interactive work is dispatched through the operator, not a second agent loop.
 import {store} from './store.js';
 import {newCase,listCases,findCase,processTurn,callInfo,startCall,validateWebhook,twilioTurn,twilioStatus,adbDevices,adbDial,duplicatePhotos} from './negotiation.js';
-import {getDashboard,getThread,clearConversation,receiveMessage,generateDraft,updateSettings,updateTask,sendReply,sendWhatsApp,verifyWhatsApp,whatsappChallenge,parseWhatsApp} from './inbox.js';
+import {getDashboard,getThread,clearConversation,receiveMessage,updateSettings,updateTask,sendReply,sendWhatsApp,verifyWhatsApp,whatsappChallenge,parseWhatsApp} from './inbox.js';
 import {createJoinSession,sessionStatus,consumeJoinMessage,completeDemo,getOnboardingStats,onboardingConfig,isRegisteredWhatsApp,startSms,checkSms} from './onboarding.js';
 import {isOwner,processOwnerTask,processInboundTask,handleApproval,operatorConfig,operatorPending,recoverInterruptedTasks,resumePausedTask,runLocalOperator,localOperatorBusy,LOCAL_SENDER} from './operator.js';
 import {getWork} from './work-ledger.js';
@@ -161,10 +161,6 @@ async function handle(req,res) {
       if(req.method==='POST'&&url.pathname==='/api/admin/send')return json(res,200,await sendReply(await body(req)));
       if(req.method==='POST'&&url.pathname==='/api/admin/settings')return json(res,200,await updateSettings(await body(req)));
       if(req.method==='POST'&&url.pathname==='/api/admin/task')return json(res,200,await updateTask(await body(req)));
-      if(req.method==='POST'&&url.pathname==='/api/admin/draft'){
-        const b=await body(req);const id=String(b.id||'');if(!id)return json(res,400,{error:'작업 ID 필요'});
-        void generateDraft(id);return json(res,202,{ok:true});
-      }
       if (req.method==='GET' && url.pathname==='/api/health') return json(res,200,{ok:true,busy:localOperatorBusy(),approvals:(await operatorPending()).length,platform:process.platform});
       if (req.method==='GET' && url.pathname==='/api/history') {
         const d=await getDashboard(),t=d.threads.find(x=>x.channel==='test'&&x.sender===LOCAL_SENDER);
