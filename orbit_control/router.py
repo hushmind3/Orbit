@@ -1,7 +1,7 @@
 """Mountable FastAPI management plane for Orbit's existing Node execution worker.
 
 The LLM agent, WhatsApp and Twilio business logic remain in the Node worker. FastAPI
-owns the management HTTP interface, admin authentication and public webhook routing.
+owns the management HTTP interface, admin authentication. Public signup and callbacks are mounted separately.
 """
 from __future__ import annotations
 
@@ -194,24 +194,6 @@ def create_router(*, worker_url: str = 'http://127.0.0.1:4786', prefix: str = '/
         if tail.startswith('control/'):
             raise HTTPException(404)
         return await proxy(req,'/api/'+tail,admin=True)
-
-    @router.api_route('/webhook/whatsapp', methods=['GET','POST'])
-    async def whatsapp(req: Request):
-        return await proxy(req,'/webhook/whatsapp')
-
-    @router.api_route('/twilio/{tail:path}',methods=['POST'])
-    async def telephony(req: Request,tail: str):
-        return await proxy(req,'/twilio/'+tail)
-
-    @router.api_route('/onboarding/{tail:path}',methods=['GET','POST'])
-    async def onboarding(req: Request,tail: str):
-        return await proxy(req,'/onboarding/'+tail)
-
-    @router.get('/join',include_in_schema=False)
-    @router.get('/join.html',include_in_schema=False)
-    async def join(req: Request):
-        # React uses the pathname to render a public Tailwind signup page.
-        return FileResponse(built_index(),media_type='text/html',headers={'Cache-Control':'no-store'})
 
     @router.get('/healthz')
     async def healthz():
