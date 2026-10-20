@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 ROOT = Path(__file__).resolve().parents[1]
 BLOCKED_HEADERS = {'host','connection','keep-alive','transfer-encoding','proxy-authorization',
                    'proxy-authenticate','te','trailer','upgrade','content-length','content-encoding',
-                   'x-orbit-agent','x-orbit-pairing','forwarded','x-forwarded-for'}
+                   'x-orbit-agent','x-orbit-pairing','x-orbit-client-ip','forwarded','x-forwarded-for'}
 BLOCKED_REPLY_HEADERS = {'connection','keep-alive','transfer-encoding','content-length',
                          'content-encoding','set-cookie','access-control-allow-origin'}
 COOKIE = 'orbit_admin'
@@ -159,6 +159,10 @@ def create_router(*, worker_url: str = 'http://127.0.0.1:4786', prefix: str = '/
             raise HTTPException(413,detail='요청 크기 초과')
         headers={key:val for key,val in req.headers.items() if key.lower() not in BLOCKED_HEADERS}
         headers['host']=urlsplit(base).netloc
+        # The Node worker sees only this loopback gateway, not each visitor.
+        # Supply the peer identity separately for per-user signup rate limits.
+        if target.startswith('/onboarding/') and req.client:
+            headers['x-orbit-client-ip']=req.client.host
         if admin:
             headers['x-orbit-agent']='1'
         # Node is bound to loopback and validates requests against its own host.

@@ -76,6 +76,20 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(response.json()['headers']['x-twilio-signature'],'valid-signature')
         self.assertEqual(self.client.get('/orbit/onboarding/config').json()['path'],'/onboarding/config')
 
+    def test_multiple_signup_users_keep_independent_rate_limit_identities(self):
+        with TestClient(self.app, client=('203.0.113.42',12345)) as external:
+            resp=external.post('/orbit/onboarding/session',json={'phone':'+821012345678'},
+                               headers={'Origin':'http://testserver','X-Orbit-Client-IP':'1.2.3.4'})
+            self.assertEqual(resp.status_code,201)
+            headers=resp.json()['headers']
+            self.assertEqual(headers['x-orbit-client-ip'],'203.0.113.42')
+            self.assertNotIn('origin',headers)
+        with TestClient(self.app, client=('203.0.113.43',12345)) as second:
+            resp=second.post('/orbit/onboarding/session',json={'phone':'+821011122233'},
+                             headers={'Origin':'http://testserver'})
+            self.assertEqual(resp.status_code,201)
+            self.assertEqual(resp.json()['headers']['x-orbit-client-ip'],'203.0.113.43')
+
     def test_no_remote_admin_without_login(self):
         # Pretend a reverse-proxy forwarded the incoming request, which rules out local-trust bypass.
         res=self.client.get('/orbit/api/admin/state',headers={'X-Forwarded-For':'1.1.1.1','X-Orbit-Agent':'1'})

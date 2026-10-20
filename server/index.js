@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {isIP} from 'node:net';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
@@ -20,6 +21,14 @@ const DIST=path.join(ROOT,'dist');
 const PORT=Number(process.env.ORBIT_PORT||4786);
 if(!Number.isInteger(PORT)||PORT<1||PORT>65535)throw Error('ORBIT_PORT는 1~65535 범위여야 합니다.');
 await bootstrapConnectors();
+// FastAPI forwards the actual peer so one signup does not rate-limit everyone.
+// Only trust this header from a directly connected loopback gateway.
+function signupPeer(req){
+ const remote=String(req.socket.remoteAddress||'unknown');
+ const fromLocal=/^(::1|::ffff:127\\.0\\.0\\.1|127\\.0\\.0\\.1)$/.test(remote);
+ const forwarded=req.headers['x-orbit-client-ip'];
+ return fromLocal&&typeof forwarded==='string'&&isIP(forwarded)?forwarded:remote;
+}
 const joinAttempts=new Map();
 function joinAllowed(remote){const key=String(remote||'unknown');const now=Date.now();const recent=(joinAttempts.get(key)||[]).filter(t=>now-t<15*60*1000);if(recent.length>=5){joinAttempts.set(key,recent);return false;}recent.push(now);joinAttempts.set(key,recent);if(joinAttempts.size>1000)for(const [k,ts] of joinAttempts){if(ts.every(t=>now-t>15*60*1000))joinAttempts.delete(k);}return true;}
 const types={'.html':'text/html; charset=utf-8','.js':'application/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon','.png':'image/png'};
@@ -95,17 +104,17 @@ async function handle(req,res) {
     if(url.pathname==='/onboarding/session'&&req.method==='POST'){
       const origin=req.headers.origin;
       if(origin && origin!==`http://${req.headers.host}` && origin!==`https://${req.headers.host}`)return json(res,403,{error:'invalid origin'});
-      if(!joinAllowed(req.socket.remoteAddress))return json(res,429,{error:'연결 요청이 너무 많습니다. 15분 뒤 다시 시도해 주세요.'});
+      if(!joinAllowed(signupPeer(req)))return json(res,429,{error:'연결 요청이 너무 많습니다. 15분 뒤 다시 시도해 주세요.'});
       const data=await body(req);const item=await createJoinSession({phone:data.phone,name:data.name,email:data.email});return json(res,201,item);
     }
     if(url.pathname==='/onboarding/sms/start'&&req.method==='POST'){
       const origin=req.headers.origin;if(origin&&origin!==`http://${req.headers.host}`&&origin!==`https://${req.headers.host}`)return json(res,403,{error:'invalid origin'});
-      if(!joinAllowed(req.socket.remoteAddress))return json(res,429,{error:'잠시 뒤 다시 시도하세요.'});
+      if(!joinAllowed(signupPeer(req)))return json(res,429,{error:'잠시 뒤 다시 시도하세요.'});
       const b=await body(req);return json(res,200,await startSms(b.id));
     }
     if(url.pathname==='/onboarding/sms/check'&&req.method==='POST'){
       const origin=req.headers.origin;if(origin&&origin!==`http://${req.headers.host}`&&origin!==`https://${req.headers.host}`)return json(res,403,{error:'invalid origin'});
-      if(!joinAllowed(req.socket.remoteAddress))return json(res,429,{error:'인증 시도가 너무 많습니다.'});
+      if(!joinAllowed(signupPeer(req)))return json(res,429,{error:'인증 시도가 너무 많습니다.'});
       const b=await body(req);return json(res,200,await checkSms(b.id,b.code));
     }
     if(req.method==='GET'&&url.pathname.startsWith('/onboarding/session/')){
