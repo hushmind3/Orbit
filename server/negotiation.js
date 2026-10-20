@@ -129,7 +129,15 @@ export async function twilioTurn({id,form}){
  }
  return sayGather(id,sess.key,decision.say,decision.digits);
 }
-export async function twilioStatus(id,form){await setCaseStatus(id,clamp(form.CallStatus,80)||'unknown').catch(()=>{});if(['completed','failed','busy','no-answer','canceled'].includes(form.CallStatus)){sessions.delete(id);await persistSessions();}}
+export async function twilioStatus(id,form){
+ const callStatus=clamp(form.CallStatus,80)||'unknown';
+ const current=await findCase(id);
+ // A telephone platform's 'completed' means the call ended, NOT that negotiation succeeded.
+ if(current?.status==='needs-approval'&&callStatus==='completed'){
+  await recordTurn(id,'system','통신상태: completed (조건 확인이 필요하여 협상은 미완료)');
+ }else await setCaseStatus(id,callStatus).catch(()=>{});
+ if(['completed','failed','busy','no-answer','canceled'].includes(callStatus)){sessions.delete(id);await persistSessions();}
+}
 export async function adbDevices(){
  try {const {stdout}=await exec(adbExecutable(),['devices'],{timeout:4000,windowsHide:true});return stdout.trim();}
  catch(e){return `ADB 사용 불가: ${e.code||e.message}`;}
