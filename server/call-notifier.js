@@ -40,13 +40,30 @@ export async function deliverCallNotification(caseId,{force=false}={}){
   const c=await findCase(caseId);if(!c)throw Error('통화 내역이 없습니다.');
   const notes=c.turns.slice(-12).map(t=>(t.role==='assistant'?'Orbit':t.role==='customer'?'상대방':'시스템')+': '+t.content).join('\n').slice(0,900);
   const body='📞 AI 전화 종료\n상담: '+c.name+'\n상태: '+x.terminalStatus+'\n\n'+(notes||'전화 연결 결과 외에 확인된 대화 기록이 없습니다.')+'\n\n통화 종료는 협상·해지·환불 성공을 의미하지 않습니다. 결과를 별도로 확인해 주세요.';
-  if(!x.deliveredWhatsApp&&x.recipient){await sendWhatsApp(x.recipient,body);
-   await transact(rows=>{const r=rows.find(y=>y.caseId===caseId);if(r)r.deliveredWhatsApp=true;});}
-  x=(await load()).find(r=>r.caseId===caseId);
-  if(!x.deliveredLocal&&x.threadId){await addSystemMessage(x.threadId,body);
-   await transact(rows=>{const r=rows.find(y=>y.caseId===caseId);if(r)r.deliveredLocal=true;});}
+  // Start both channel deliveries independently. An outage or slow response on
+  // either channel must never prevent the other from recording its result.
+  const deliveries=[];
+  if(!x.deliveredWhatsApp&&x.recipient){
+   deliveries.push((async()=>{await sendWhatsApp(x.recipient,body);
+    await transact(rows=>{const r=rows.find(y=>y.caseId===caseId);if(r)r.deliveredWhatsApp=true;});})());
+  }
+  if(!x.deliveredLocal&&x.threadId){
+   deliveries.push((async()=>{await addSystemMessage(x.threadId,body);
+    await transact(rows=>{const r=rows.find(y=>y.caseId===caseId);if(r)r.deliveredLocal=true;});})());
+  }
+  const outcomes=await Promise.allSettled(deliveries);
+  const errors=outcomes.filter(r=>r.status==='rejected').map(r=>String(r.reason?.message||r.reason).slice(0,150));
   return transact(rows=>{const r=rows.find(y=>y.caseId===caseId);
-   if(r&&r.deliveredWhatsApp&&r.deliveredLocal){r.notified=true;r.notifiedAt=Date.now();r.lastError=null;return true;}return false;});
+   if(!r)return false;
+   if(r.deliveredWhatsApp&&r.deliveredLocal){
+    r.notified=true;r.notifiedAt=Date.now();r.lastError=null;r.nextAttemptAt=0;return true;
+   }
+   // Preserve successful destinations; retry only the undelivered ones.
+   r.attempts=(r.attempts||0)+1;
+   r.lastError=(errors.join(' | ')||'일부 알림 채널이 아직 완료되지 않았습니다.').slice(0,300);
+   r.nextAttemptAt=Date.now()+backoff(r.attempts);
+   return false;
+  });
  }catch(e){await transact(rows=>{const r=rows.find(y=>y.caseId===caseId);
   if(r&&!r.notified){r.attempts=(r.attempts||0)+1;r.lastError=String(e.message||e).slice(0,300);r.nextAttemptAt=Date.now()+backoff(r.attempts);}});return false;
  }finally{inFlight.delete(caseId);}

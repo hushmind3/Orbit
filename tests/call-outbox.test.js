@@ -25,4 +25,46 @@ test('local desktop call can be reported without fake WhatsApp number',async()=>
  await trackCall(c.id,{recipient:null,threadId:t.threadId});await queueCallCompletion(c.id,'completed');assert.equal(await deliverCallNotification(c.id),true);
  assert.match((await getThread(t.threadId)).messages.at(-1).text,/AI 전화 종료/);assert.equal((await callNotificationStatus(c.id)).notified,true);
 });
+test('Meta outage cannot block PC result; successful PC channel is never duplicated on retry',async()=>{
+ const t=await receiveMessage({channel:'test',sender:'pc-owner',text:'전화 걸고 결과 알려줘'});
+ const c=await newCase({name:'채널 독립',goal:'확인',limits:'없음'});
+ await trackCall(c.id,{recipient:'821011113333',threadId:t.threadId});
+ await queueCallCompletion(c.id,'completed');
+ const original=globalThis.fetch;let release,requests=0;
+ const delayed=new Promise(resolve=>{release=resolve;});
+ globalThis.fetch=async(url,opts)=>{if(String(url).includes('/messages')){requests++;await delayed;return {ok:false,status:503,json:async()=>({error:{message:'Meta unavailable'}})};}return original(url,opts);};
+ try{
+  const sending=deliverCallNotification(c.id);
+  let local=false;
+  for(let i=0;i<70;i++){
+   if((await getThread(t.threadId)).messages.some(m=>m.text.includes('AI 전화 종료'))){local=true;break;}
+   await new Promise(resolve=>setTimeout(resolve,20));
+  }
+  assert.equal(local,true,'PC must receive its result before a stalled WhatsApp request settles');
+  release();
+  assert.equal(await sending,false);
+  const partial=await callNotificationStatus(c.id);
+  assert.equal(partial.deliveredWhatsApp,false);assert.equal(partial.deliveredLocal,true);
+  assert.equal(partial.notified,false);assert.ok(partial.nextAttemptAt>Date.now());
+  globalThis.fetch=async(url,opts)=>{if(String(url).includes('/messages')){requests++;return {ok:true,json:async()=>({messages:[{id:'wamid-retry'}]})};}return original(url,opts);};
+  assert.equal(await deliverCallNotification(c.id,{force:true}),true);
+  const messages=(await getThread(t.threadId)).messages.filter(m=>m.text.includes('AI 전화 종료'));
+  assert.equal(messages.length,1,'successful PC notification must not be replayed');
+  assert.equal(requests,2);assert.equal((await callNotificationStatus(c.id)).notified,true);
+ }finally{release();globalThis.fetch=original;}
+});
+test('Broken PC conversation does not stop WhatsApp delivery or cause resend to WhatsApp',async()=>{
+ const c=await newCase({name:'PC 오류',goal:'확인',limits:'없음'});
+ await trackCall(c.id,{recipient:'821011114444',threadId:'missing-thread'});
+ await queueCallCompletion(c.id,'failed');
+ const original=globalThis.fetch;let sends=0;
+ globalThis.fetch=async(url,opts)=>{if(String(url).includes('/messages')){sends++;return {ok:true,json:async()=>({messages:[{id:'wamid-pc-fail'}]})};}return original(url,opts);};
+ try{
+  assert.equal(await deliverCallNotification(c.id),false);
+  let state=await callNotificationStatus(c.id);
+  assert.equal(state.deliveredWhatsApp,true);assert.equal(state.deliveredLocal,false);assert.equal(state.notified,false);
+  assert.equal(await deliverCallNotification(c.id,{force:true}),false);
+  assert.equal(sends,1,'WhatsApp success must not be resent when PC channel fails');
+ }finally{globalThis.fetch=original;}
+});
 test.after(async()=>{await fs.rm(dir,{recursive:true,force:true});});
