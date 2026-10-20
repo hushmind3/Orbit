@@ -11,6 +11,7 @@ import {createJoinSession,sessionStatus,consumeJoinMessage,completeDemo,getOnboa
 import {isOwner,processOwnerTask,handleApproval,operatorConfig,operatorPending} from './operator.js';
 import {saveConfig,loadConfig} from './config.js';
 import {bootstrapConnectors,connectorSummary,updateConnectors} from './connectors.js';
+import {notifyCallCompletion} from './call-notifier.js';
 
 const ROOT=path.resolve(fileURLToPath(new URL('..',import.meta.url)));
 const DIST=path.join(ROOT,'dist');
@@ -80,7 +81,7 @@ async function handle(req,res) {
       const raw=await rawBody(req,10000);const form=Object.fromEntries(new URLSearchParams(raw));
       const canonical=(process.env.ORBIT_PUBLIC_URL||'').replace(/\/+$/,'')+url.pathname+url.search;
       if(!validateWebhook({id:found[2],token:url.searchParams.get('token'),url:canonical,form,signature:req.headers['x-twilio-signature']}))return json(res,403,{error:'Twilio signature invalid'});
-      if(found[1]==='status'){await twilioStatus(found[2],form);return json(res,200,{ok:true});}
+      if(found[1]==='status'){await twilioStatus(found[2],form);json(res,200,{ok:true});void notifyCallCompletion(found[2],form.CallStatus).catch(e=>console.error('전화 결과 알림 실패:',e.message));return;}
       const response=await twilioTurn({id:found[2],form});res.writeHead(200,{'Content-Type':'application/xml; charset=utf-8','Cache-Control':'no-store'});res.end(response);return;
     }
     // Customer onboarding never requires a separate installed app.

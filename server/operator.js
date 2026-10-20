@@ -7,6 +7,7 @@ import {store} from './store.js';
 import {getTask,getThread,sendReply,setTaskStatus,sendWhatsApp,addSystemMessage} from './inbox.js';
 import {newCase,startCall,callReady} from './negotiation.js';
 import {loadConfig,publicConfig} from './config.js';
+import {trackCall} from './call-notifier.js';
 
 const pendingFile=()=>process.env.ORBIT_APPROVALS_PATH||path.resolve('.runtime','operator-approvals.json');
 export async function isOwner(sender){const {owner}=await loadConfig();const n=String(owner||'').replace(/\D/g,'');return Boolean(n && String(sender||'').replace(/\D/g,'')===n);}
@@ -34,9 +35,9 @@ function parsedTool(message){const call=message.tool_calls?.[0];if(!call)return 
 function recordAssistant(messages,call,provider){return {role:'assistant',content:'',tool_calls:[{id:call.id,type:'function',function:{name:call.name,arguments:provider==='ollama'?call.args:JSON.stringify(call.args)}}]};}
 function toolResult(messages,call,provider,result){messages.push(provider==='ollama'?{role:'tool',tool_name:call.name,content:result}:{role:'tool',tool_call_id:call.id,content:result});}
 async function notify(recipient,taskId,text){const task=await getTask(taskId);const thread=await getThread(task.threadId);return thread.channel==='test'?addSystemMessage(thread.id,text):sendWhatsApp(recipient,text);}
-async function execute(call){if(!toolNames.has(call.name))throw Error('알 수 없는 도구를 거절했습니다.');if(call.name==='start_customer_service_call'){
+async function execute(call,recipient){if(!toolNames.has(call.name))throw Error('알 수 없는 도구를 거절했습니다.');if(call.name==='start_customer_service_call'){
  const {number,goal,name,facts,limits}=call.args;if(!callReady())throw Error('Twilio 실제 통화 미설정');if(!/^\+[1-9]\d{6,14}$/.test(String(number||'')))throw Error('국제번호 형식의 통화 번호만 지원합니다.');
- const c=await newCase({number,goal,name,facts,limits});const model=await cfg();const result=await startCall(c.id,number,{provider:model.provider,base:model.base,model:model.model,key:model.key});return JSON.stringify({caseId:c.id,callSid:result.sid,status:result.status});
+ const c=await newCase({number,goal,name,facts,limits});const model=await cfg();const result=await startCall(c.id,number,{provider:model.provider,base:model.base,model:model.model,key:model.key});await trackCall(c.id,recipient);return JSON.stringify({caseId:c.id,callSid:result.sid,status:result.status});
  }
  return runTool(call.name,call.args,{store});}
 const requiresConsent=call=>permissionRequired.has(call.name)||call.name==='start_customer_service_call'||call.name==='open_app';
@@ -53,7 +54,7 @@ async function loop(taskId,recipient,messages,startRound=0){
    await notify(recipient,taskId,`🔐 실행 승인 필요\n도구: ${call.name}\n내용: ${JSON.stringify(call.args).slice(0,480)}\n\n승인하려면: 승인 ${code}\n거절하려면: 거절 ${code}\n20분 후 만료됩니다. 승인 전에는 실행하지 않습니다.`);
    return {status:'awaiting_approval',code};
   }
-  let result;try{result=String(await execute(call)).slice(0,11000);}catch(e){result='도구 오류: '+e.message;}
+  let result;try{result=String(await execute(call,recipient)).slice(0,11000);}catch(e){result='도구 오류: '+e.message;}
   toolResult(messages,call,provider,result);
  }
  await sendReply({threadId:(await getTask(taskId)).threadId,text:'도구 실행 상한 8회에 도달했습니다. 결과를 확인해 주세요.',taskId});return {status:'limit'};
@@ -64,7 +65,7 @@ export async function handleApproval(sender,text){const match=/^(승인|거절)\
  if(!row)return {consumed:true,ok:false,reason:'승인 코드가 없거나 이미 사용됐습니다.'};
  if(row.expiresAt<Date.now()){await setTaskStatus(row.taskId,'expired');return {consumed:true,ok:false,reason:'승인 기한이 지났습니다.'};}
  if(match[1]==='거절'){await setTaskStatus(row.taskId,'dismissed');return {consumed:true,ok:true,reason:'실행 요청을 거절했습니다.'};}
- await setTaskStatus(row.taskId,'running');let result;try{result=String(await execute(row.call)).slice(0,11000);}catch(e){result='도구 오류: '+e.message;}
+ await setTaskStatus(row.taskId,'running');let result;try{result=String(await execute(row.call,row.recipient)).slice(0,11000);}catch(e){result='도구 오류: '+e.message;}
  const messages=row.messages;toolResult(messages,row.call,row.provider,result);
  try{await loop(row.taskId,row.recipient,messages,row.round);return {consumed:true,ok:true,reason:result.slice(0,300)};}
  catch(e){await setTaskStatus(row.taskId,'failed',e.message);await notify(row.recipient,row.taskId,'⚠️ 실행 뒤 후속 처리 실패: '+e.message);return {consumed:true,ok:false,reason:e.message};}
