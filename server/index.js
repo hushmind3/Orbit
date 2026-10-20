@@ -211,13 +211,14 @@ async function handle(req,res) {
       }
       return json(res,404,{error:'API not found'});
     }
-    if(url.pathname==='/'||url.pathname==='/admin'||url.pathname==='/admin.html'){
-      const data=await fs.readFile(path.join(ROOT,'public','admin.html'));
-      res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(data);return;
-    }
-    if(url.pathname==='/phone'||url.pathname==='/phone.html'){
-      const data=await fs.readFile(path.join(ROOT,'public','phone.html'));
-      res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(data);return;
+    // The former PC chat and phone-lab screens are replaced by a single
+    // React/Tailwind operations console. Node hosts it only for local fallback;
+    // production management and authentication are supplied by FastAPI.
+    if(['/', '/admin', '/admin.html', '/phone', '/phone.html'].includes(url.pathname)){
+      const page=path.join(DIST,'index.html');
+      let data;try{data=await fs.readFile(page);}catch{return json(res,503,{error:'운영 콘솔을 빌드하세요: npm run build'});}
+      res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
+      res.end(data);return;
     }
     if(req.method!=='GET'&&req.method!=='HEAD') return json(res,405,{error:'Method Not Allowed'});
     const segment=decodeURIComponent(url.pathname);

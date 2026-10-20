@@ -1,188 +1,100 @@
-import React, {useCallback,useEffect,useRef,useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {ArrowUp, Bot, Check, ChevronRight, CircleHelp, Cpu, FolderOpen, Globe, LoaderCircle, MessageCircle, Mic, Monitor, PanelRightClose, PanelRightOpen, RotateCcw, Settings2, ShieldCheck, Sparkles, Volume2, VolumeX, X, Zap} from 'lucide-react';
+import {Activity, ArrowRight, Bot, CheckCircle2, ChevronRight, CircleAlert, ClipboardList, CreditCard, ExternalLink, FileText, HeartPulse, KeyRound, LayoutDashboard, LoaderCircle, Phone, RefreshCw, Settings2, Shield, Smartphone, Users, Wifi, XCircle} from 'lucide-react';
 import './style.css';
 
-type Config={provider:'ollama'|'openai';base:string;model:string;key:string};
-type Message={id:string;role:'user'|'assistant';text:string;time?:string};
-type Activity={id:string;type:'status'|'tool_result'|'error';text:string;tool?:string;args?:unknown};
-type Approval={id:string;tool:string;args:Record<string,unknown>;answered?:boolean};
-type Event={type:'status'|'tool_result'|'approval'|'answer'|'done'|'error';id?:string;tool?:string;text?:string;args?:Record<string,unknown>;result?:string};
-type SpeechEvent={results: ArrayLike<{isFinal:boolean;0:{transcript:string}}>};
-type Recognizer={lang:string;continuous:boolean;interimResults:boolean;onresult:((e:SpeechEvent)=>void)|null;onerror:((e:{error:string})=>void)|null;onend:(()=>void)|null;start:()=>void;stop:()=>void;};
-const getSpeechCtor=()=> (window as unknown as {webkitSpeechRecognition?:new()=>Recognizer;SpeechRecognition?:new()=>Recognizer}).SpeechRecognition ?? (window as unknown as {webkitSpeechRecognition?:new()=>Recognizer}).webkitSpeechRecognition;
-const HEADERS={'Content-Type':'application/json','X-Orbit-Agent':'1'};
-const DEFAULT:Config={provider:'ollama',base:'http://127.0.0.1:11434',model:'qwen3:4b',key:''};
-function loadConfig():Config {try { const saved=sessionStorage.getItem('orbit-settings');return saved?{...DEFAULT,...JSON.parse(saved)}:DEFAULT;}catch{return DEFAULT;}}
-const templates=[
- {title:'웹에서 찾아줘',prompt:'구글에서 오늘 AI 에이전트 관련 최신 뉴스를 찾아서 제목을 읽어줘.',icon:Globe},
- {title:'파일 정리 확인',prompt:'내 다운로드 폴더에 있는 파일 목록과 최근 수정한 파일을 알려줘.',icon:FolderOpen},
- {title:'프로그램 실행',prompt:'Windows 메모장 열어줘.',icon:Monitor},
- {title:'정보 기억',prompt:'내가 말하는 내용을 앞으로 기억해 둬.',icon:Sparkles}
-];
-const toolNames:Record<string,string>={open_app:'프로그램 실행',list_files:'폴더 탐색',search_files:'파일 검색',read_text_file:'파일 읽기',write_text_file:'파일 저장',browser_open:'웹사이트 열기',browser_search:'웹 검색',browser_read:'웹 내용 읽기',browser_click:'웹 요소 클릭',browser_fill:'웹 입력',browser_press:'키 입력',remember:'장기 기억 저장'};
-function toText(v:unknown) {if(v==null)return '';if(typeof v==='string')return v;return JSON.stringify(v,null,2);}
-const short=(value:string,max=200)=>value.length<=max?value:value.slice(0,max)+'…';
-
+const prefix=window.location.pathname.startsWith('/orbit')?'/orbit':'';
+const routes={api:(url:string)=>prefix+url,join:()=>prefix+'/join'};
+const HEADER={'Content-Type':'application/json','X-Orbit-Agent':'1'};
+type Task={id:string;title:string;status:string;updatedAt:string;createdAt:string;threadId:string;error?:string};
+type Thread={id:string;sender:string;channel:string;lastMessage?:{text:string;time:string};count:number};
+type Event={id:string;time:string;event:string;description:string};
+type Dashboard={counts:{threads:number;open:number;failed:number};tasks:Task[];threads:Thread[];events:Event[];settings:{autoDraft:boolean;autoSend:boolean};channels:Record<string,{connected:boolean;note:string}>;phone:{configured:boolean}};
+type Model={provider:string;base:string;model:string;hasKey:boolean;owner:string;ownerConfigured:boolean;approvalMode:string;instructions:string;ready:boolean;twilioConfigured:boolean};
+type Member={id:string;phone:string;createdAt:string;channel:string};
+type Accounts={registered:number;pending:number;accounts:Member[];config:{ready:boolean;note:string;smsReady:boolean;metaConfigured:boolean}};
+type Case={id:string;name:string;goal:string;number:string;status:string;created:string;turnCount:number};
+type Check={name:string;status:string;detail:string};
+type Connector={set:boolean;value:string};
+type Pending={code:string;tool:string;args:unknown;question:boolean;taskId:string;expiresAt:number;recipient:string};
+type Workspace='overview'|'tasks'|'members'|'calls'|'models'|'channels'|'activity';
+const sections:[Workspace,string,React.ComponentType<{size?:number;className?:string}>][]=[['overview','운영 개요',LayoutDashboard],['tasks','업무 관리',ClipboardList],['members','가입자 관리',Users],['calls','전화 업무',Phone],['models','모델·에이전트',Bot],['channels','연결·진단',Wifi],['activity','실행 기록',Activity]];
+const statusName:Record<string,string>={received:'접수',running:'실행 중',awaiting_input:'답변 대기',awaiting_approval:'승인 대기',paused:'일시 중단',partial:'일부 완료',completed:'완료',answered:'답변 완료',blocked:'진행 불가',failed:'실패',report_pending:'보고 재시도',reported:'보고 완료',dismissed:'취소'};
+const statusTheme:Record<string,string>={running:'bg-sky-400/10 text-sky-300 ring-sky-400/25',received:'bg-sky-400/10 text-sky-300 ring-sky-400/25',completed:'bg-emerald-400/10 text-emerald-300 ring-emerald-400/25',answered:'bg-emerald-400/10 text-emerald-300 ring-emerald-400/25',partial:'bg-amber-400/10 text-amber-300 ring-amber-400/25',paused:'bg-amber-400/10 text-amber-300 ring-amber-400/25',failed:'bg-rose-400/10 text-rose-300 ring-rose-400/25',blocked:'bg-rose-400/10 text-rose-300 ring-rose-400/25'};
+const relative=(date:string|number|undefined)=>{if(!date)return '-';const d=new Date(date).getTime();return Number.isNaN(d)?'-':new Date(d).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});};
+const display=(error:unknown)=>error instanceof Error?error.message:String(error);
+async function request<T>(path:string,options:RequestInit={}):Promise<T>{
+ const r=await fetch(routes.api(path),{...options,credentials:'same-origin',headers:{...HEADER,...(options.headers||{})},cache:'no-store'});
+ const raw=await r.text();let data:any;try{data=JSON.parse(raw);}catch{throw Error('서버 응답을 읽지 못했습니다.');}
+ if(!r.ok)throw Error(typeof data.detail==='string'?data.detail:data.error||`서버 오류 ${r.status}`);
+ return data as T;
+}
+async function send<T>(path:string,data:unknown):Promise<T>{return request<T>(path,{method:'POST',body:JSON.stringify(data)});}
+function Status({value}:{value:string}){return <span className={'inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset '+(statusTheme[value]||'bg-slate-700/50 text-slate-300 ring-slate-600')}>{statusName[value]||value}</span>;}
+function Panel({title,children,actions}:{title:string;children:React.ReactNode;actions?:React.ReactNode}){return <section className="panel"><div className="mb-5 flex items-center justify-between gap-3"><h2 className="text-base font-semibold text-slate-100">{title}</h2>{actions}</div>{children}</section>;}
+function Empty({children}:{children:React.ReactNode}){return <div className="rounded-xl border border-dashed border-slate-700 p-8 text-center text-sm text-slate-400">{children}</div>;}
+function Button({children,disabled,onClick,kind='primary'}:{children:React.ReactNode;disabled?:boolean;onClick?:()=>void;kind?:'primary'|'subtle'|'danger'}){return <button type="button" disabled={disabled} onClick={onClick} className={kind==='primary'?'btn-primary':kind==='danger'?'btn-danger':'btn-subtle'}>{children}</button>;}
+function Field({label,children}:{label:string;children:React.ReactNode}){return <label className="flex flex-col gap-1.5 text-sm text-slate-400"><span>{label}</span>{children}</label>;}
+function Signup(){const [phone,setPhone]=useState(''),[name,setName]=useState(''),[email,setEmail]=useState(''),[code,setCode]=useState(''),[session,setSession]=useState<any>(null),[config,setConfig]=useState<any>(null),[status,setStatus]=useState(''),[busy,setBusy]=useState(false);
+ useEffect(()=>{void request<any>('/onboarding/config').then(setConfig).catch(e=>setStatus(display(e)));},[]);
+ useEffect(()=>{if(!session?.id||session.status==='verified')return;const timer=setInterval(()=>{void request<any>('/onboarding/session/'+session.id).then(next=>{setSession((prior:any)=>({...prior,...next}));if(next.status==='verified')setStatus('WhatsApp 연결이 완료됐습니다.');}).catch(e=>setStatus(display(e)));},3000);return()=>clearInterval(timer);},[session?.id,session?.status]);
+ const perform=async(fn:()=>Promise<unknown>)=>{setBusy(true);try{await fn();}catch(e){setStatus(display(e));}finally{setBusy(false);}};
+ const begin=()=>void perform(async()=>{const next=await send<any>('/onboarding/session',{phone,name,email});setSession(next);if(next.status==='awaiting_sms'){await send('/onboarding/sms/start',{id:next.id});setStatus('SMS 인증번호를 전송했습니다.');}else setStatus('WhatsApp QR을 확인해 주세요.');});
+ const verify=()=>void perform(async()=>{const next=await send<any>('/onboarding/sms/check',{id:session.id,code});setSession({...session,...next,status:'awaiting_whatsapp'});setStatus('번호 인증이 완료됐습니다. WhatsApp에서 QR을 스캔하세요.');});
+ return <div className="min-h-screen bg-slate-950 px-4 py-12"><div className="mx-auto max-w-lg"><div className="mb-8 flex items-center gap-3 text-2xl font-bold tracking-tight text-white"><span className="logo-mark">O</span> Orbit</div><Panel title="WhatsApp AI 비서 연결"><p className="mb-6 text-sm leading-6 text-slate-400">전화번호 인증 후 WhatsApp에서 Orbit을 연결합니다. PC 프로그램을 설치할 필요는 없습니다.</p>
+ {!config?.ready?<div className="notice">{config?.note||'운영자가 WhatsApp 연결을 준비하고 있습니다.'}</div>:session?.status==='verified'?<div className="flex flex-col items-center gap-4 py-8 text-center text-emerald-300"><CheckCircle2 size={52}/><h2 className="text-xl font-semibold">연결 완료</h2><p className="text-sm text-slate-400">WhatsApp에서 Orbit에 업무를 지시하실 수 있습니다.</p></div>:session?.status==='awaiting_whatsapp'?<div className="space-y-4 text-center"><div className="mx-auto w-fit rounded-2xl bg-white p-4"><img className="h-64 w-64" src={routes.api('/onboarding/qr/'+session.id)} alt="WhatsApp QR"/></div><a className="btn-primary inline-flex justify-center" href={session.link||'#'} target="_blank" rel="noreferrer">WhatsApp 채팅 열기 <ExternalLink size={16}/></a><p className="text-sm text-slate-400">QR을 스캔하고 미리 입력된 연결 메시지를 전송하세요.</p></div>:session?.status==='awaiting_sms'?<div className="space-y-4"><Field label="SMS 인증번호"><input className="input" value={code} onChange={e=>setCode(e.target.value)} autoComplete="one-time-code" inputMode="numeric"/></Field><Button disabled={busy||!code.trim()} onClick={verify}>번호 확인</Button></div>:<div className="space-y-4"><Field label="표시 이름"><input className="input" value={name} onChange={e=>setName(e.target.value)}/></Field><Field label="이메일 (선택)"><input className="input" type="email" value={email} onChange={e=>setEmail(e.target.value)}/></Field><Field label="WhatsApp 전화번호 (+82...)"><input className="input" type="tel" value={phone} onChange={e=>setPhone(e.target.value)}/></Field><Button disabled={busy||!phone.trim()} onClick={begin}>번호 인증 및 연결 <ArrowRight size={16}/></Button></div>}
+ {status&&<p className="mt-4 text-sm text-slate-300" role="status">{status}</p>}</Panel></div></div>;
+}
 function App(){
- const [config,setConfig]=useState<Config>(loadConfig);
- const [settings,setSettings]=useState(false);
- const [input,setInput]=useState('');
- const [messages,setMessages]=useState<Message[]>([]);
- const [activities,setActivities]=useState<Activity[]>([]);
- const [approval,setApproval]=useState<Approval|null>(null);
- const [busy,setBusy]=useState(false);
- const [speaking,setSpeaking]=useState(false);
- const [voiceOn,setVoiceOn]=useState(false);
- const [autoSpeak,setAutoSpeak]=useState(false);
- const [sideOpen,setSideOpen]=useState(true);
- const [models,setModels]=useState<string[]>([]);
- const [modelsError,setModelsError]=useState('');
- const [serverOnline,setServerOnline]=useState(false);
- const bottomRef=useRef<HTMLDivElement|null>(null);
- const inputRef=useRef<HTMLTextAreaElement|null>(null);
- const activeSpeech=useRef<Recognizer|null>(null);
- const busyRef=useRef(false);
- useEffect(()=>{sessionStorage.setItem('orbit-settings',JSON.stringify(config));},[config]);
- useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:'smooth'});},[messages,activities,approval,busy]);
- useEffect(()=>{
-  let cancelled=false;
-  void fetch('/api/history',{headers:{'X-Orbit-Agent':'1'}}).then(r=>r.json()).then(data=>{
-    if(!cancelled){setMessages((data.items||[]).map((m:{role:'user'|'assistant';content:string;time:string},i:number)=>({id:'history-'+i,role:m.role,text:m.content,time:m.time})));setServerOnline(true);}
-  }).catch(()=>setServerOnline(false));
-  return ()=>{cancelled=true;};
+ const [tab,setTab]=useState<Workspace>(window.location.pathname.endsWith('/phone')||window.location.pathname.endsWith('/phone.html')?'calls':'overview'),[dashboard,setDashboard]=useState<Dashboard|null>(null),[onboard,setOnboard]=useState<Accounts|null>(null),[model,setModel]=useState<Model|null>(null),[connectors,setConnectors]=useState<Record<string,Connector>>({}),[pending,setPending]=useState<Pending[]>([]),[cases,setCases]=useState<Case[]>([]),[checks,setChecks]=useState<Check[]>([]);
+ const [busy,setBusy]=useState(false),[working,setWorking]=useState(false),[notice,setNotice]=useState(''),[lastSync,setLastSync]=useState(''),[access,setAccess]=useState<'loading'|'yes'|'login'>('loading'),[password,setPassword]=useState('');
+ const [draft,setDraft]=useState({provider:'openai',base:'',model:'',key:'',owner:'',approvalMode:'autonomous',instructions:''}),[secrets,setSecrets]=useState<Record<string,string>>({});
+ const [thread,setThread]=useState<{id:string;messages:{text:string;direction:string;time:string}[]}|null>(null),[work,setWork]=useState<any>(null),[selected,setSelected]=useState<string|null>(null),[answer,setAnswer]=useState<Record<string,string>>({});
+ const [callDraft,setCallDraft]=useState({number:'',name:'',goal:'',limits:''});
+ const refresh=useCallback(async()=>{
+  try{
+   const [d,o,m,c,calls]=await Promise.all([request<Dashboard>('/api/admin/state'),request<Accounts>('/api/admin/onboarding'),request<{model:Model;approvals:Pending[]}>('/api/admin/operator'),request<Record<string,Connector>>('/api/admin/connectors'),request<{cases:Case[]}>('/api/cases')]);
+   setDashboard(d);setOnboard(o);setModel(m.model);setConnectors(c);setPending(m.approvals);setCases(calls.cases);
+   setDraft(prev=>({...prev,provider:m.model.provider,base:m.model.base,model:m.model.model,owner:m.model.ownerConfigured?'':prev.owner,approvalMode:m.model.approvalMode,instructions:m.model.instructions,key:prev.key}));setLastSync(new Date().toLocaleTimeString('ko-KR'));setAccess('yes');
+  }catch(e){if(display(e).includes('인증')||display(e).includes('401'))setAccess('login');else setNotice('상태 조회 실패: '+display(e));}
  },[]);
- const readAloud=useCallback((text:string)=>{
-  if(!window.speechSynthesis)return;
-  window.speechSynthesis.cancel();
-  const utterance=new SpeechSynthesisUtterance(text.replace(/[*#`]/g,''));utterance.lang='ko-KR';utterance.rate=1.05;
-  utterance.onstart=()=>setSpeaking(true);utterance.onend=()=>setSpeaking(false);utterance.onerror=()=>setSpeaking(false);
-  window.speechSynthesis.speak(utterance);
- },[]);
- const send=useCallback(async(raw:string)=>{
-  const text=raw.trim();if(!text||busyRef.current)return;
-  busyRef.current=true;setBusy(true);setInput('');setApproval(null);setActivities([]);
-  setMessages(prev=>[...prev,{id:crypto.randomUUID(),role:'user',text}]);
-  try {
-    const response=await fetch('/api/message',{method:'POST',headers:HEADERS,body:JSON.stringify({text,config})});
-    if(!response.ok){const err=await response.json().catch(()=>({error:'서버 오류'}));throw new Error(err.error||`서버 응답 ${response.status}`);}
-    if(!response.body)throw new Error('스트리밍을 지원하지 않는 환경입니다.');
-    const reader=response.body.getReader();const decoder=new TextDecoder();let buffer='';
-    const onEvent=(event:Event)=>{
-      if(event.type==='status')setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'status',text:event.text||'',args:event.args} as Activity].slice(-25));
-      if(event.type==='tool_result')setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'tool_result',text:event.result||'',tool:event.tool} as Activity].slice(-25));
-      if(event.type==='approval'&&event.id&&event.tool)setApproval({id:event.id,tool:event.tool,args:event.args||{}});
-      if(event.type==='error')setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'error',text:event.text||'오류'}]);
-      if(event.type==='answer') {
-        const reply=event.text||'';
-        setMessages(prev=>[...prev,{id:crypto.randomUUID(),role:'assistant',text:reply}]);
-        if(autoSpeak)readAloud(reply);
-      }
-    };
-    while(true){const {value,done}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});
-      while(buffer.includes('\n')){const index=buffer.indexOf('\n');const line=buffer.slice(0,index).trim();buffer=buffer.slice(index+1);if(line){try{onEvent(JSON.parse(line));}catch{}}}
-    }
-    if(buffer.trim()){try{onEvent(JSON.parse(buffer));}catch{}}
-  }catch(err){setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'error',text:err instanceof Error?err.message:'알 수 없는 오류'}]);}
-  finally {busyRef.current=false;setBusy(false);setApproval(null);inputRef.current?.focus();}
- },[config,autoSpeak,readAloud]);
- const toggleVoice=()=>{
-  if(voiceOn){activeSpeech.current?.stop();setVoiceOn(false);return;}
-  const Ctor=getSpeechCtor();
-  if(!Ctor){setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'error',text:'이 브라우저는 음성 인식을 지원하지 않습니다. Edge/Chrome을 이용하거나 Windows Win+H 음성 입력을 사용하세요.'}]);return;}
-  try {
-    const recognition=new Ctor();activeSpeech.current=recognition;recognition.lang='ko-KR';recognition.continuous=false;recognition.interimResults=true;
-    let sent=false;
-    recognition.onresult=e=>{
-      let final='';let interim='';
-      for(let i=0;i<e.results.length;i++){const result=e.results[i];if(result.isFinal)final+=result[0].transcript;else interim+=result[0].transcript;}
-      if(final.trim()&&!sent){sent=true;setInput(final);recognition.stop();void send(final);}
-      else if(!sent)setInput(interim);
-    };
-    recognition.onerror=e=>{if(e.error!=='no-speech')setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'error',text:`마이크 오류: ${e.error}. 브라우저 권한을 확인하세요.`}]);setVoiceOn(false);};
-    recognition.onend=()=>{setVoiceOn(false);activeSpeech.current=null;};
-    recognition.start();setVoiceOn(true);
-  }catch(err){setVoiceOn(false);setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'error',text:String(err)}]);}
- };
- const respondApproval=async(allowed:boolean)=>{
-   if(!approval||approval.answered)return;
-   const id=approval.id;setApproval({...approval,answered:true});
-   try{
-     // All approvals are now ordinary assistant messages handled by the same work engine.
-     // Never call the removed /api/approval endpoint.
-     await send(`${allowed?'승인':'거절'} ${id}`);
-   }catch(err){setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'error',text:String(err)}]);}
-   finally{setApproval(null);}
- };
- const fetchModels=async()=>{
-   setModelsError('');
-   try{const r=await fetch('/api/models?host='+encodeURIComponent(config.provider==='ollama'?config.base:'http://127.0.0.1:11434'),{headers:{'X-Orbit-Agent':'1'}});
-     const data=await r.json();setModels(data.models||[]);if(data.error)setModelsError(data.error);
-   }catch{setModelsError('모델 목록을 확인할 수 없습니다.');}
- };
- const clear=async()=>{
-   if(busy)return;
-   try{const r=await fetch('/api/clear',{method:'POST',headers:HEADERS,body:'{}'});if(!r.ok)throw new Error();setMessages([]);setActivities([]);}
-   catch{setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'error',text:'대화 기록을 지우지 못했습니다.'}]);}
- };
- const handleKey=(e:React.KeyboardEvent<HTMLTextAreaElement>)=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void send(input);}};
- return <div className="app">
-  <aside className="navrail">
-   <div className="mark"><Sparkles size={25} strokeWidth={2.4}/></div>
-   <div className="navbuttons"><button className="navbutton active" title="대화"><MessageCircle size={22}/></button><button className="navbutton" title="전화 협상 비서" onClick={()=>{window.location.href='/phone';}}><Bot size={21}/></button><button className="navbutton" title="기록 초기화" disabled={busy} onClick={()=>void clear()}><RotateCcw size={20}/></button><button className="navbutton" title="설정" onClick={()=>setSettings(true)}><Settings2 size={21}/></button></div>
-   <div className="navbottom"><div className={'statusdot '+(serverOnline?'online':'offline')}/><span>LOCAL</span></div>
-  </aside>
-  <main className="mainpanel">
-    <header className="topbar">
-      <div className="identity"><span className="tiny-eye">◉</span> <span>ORBIT</span><span className="beta">BETA 0.1</span></div>
-      <div className="topactions"><span className="model-chip"><span className="greenpulse"/>{config.model}</span><button className="iconbutton mobile-hide" title={autoSpeak?'음성 답변 끄기':'음성 답변 켜기'} onClick={()=>{setAutoSpeak(!autoSpeak);window.speechSynthesis?.cancel();}}>{autoSpeak?<Volume2 size={18}/>:<VolumeX size={18}/>}</button><button className="iconbutton" title="도구 패널" onClick={()=>setSideOpen(!sideOpen)}>{sideOpen?<PanelRightClose size={20}/>:<PanelRightOpen size={20}/>}</button></div>
-    </header>
-    <section className="content">
-      {messages.length===0 ? <div className="welcome">
-        <div className="hero-symbol"><span className="hero-inner"><Sparkles size={38}/></span></div>
-        <p className="eyebrow">YOUR PERSONAL OPERATOR</p>
-        <h1>말씀만 하세요.<br/><span>나머지는 제가 합니다.</span></h1>
-        <p className="lead">검색에서 실행까지. 메모장 열기, 파일 찾기, 웹 탐색을<br className="mobile-hide"/> 이제 음성이나 문자로 명령하세요.</p>
-        <div className="suggestions">{templates.map(t=><button key={t.title} className="suggestion" onClick={()=>void send(t.prompt)}><t.icon size={19}/><span>{t.title}</span><ChevronRight size={16} className="suggest-arrow"/></button>)}</div>
-      </div>:<div className="thread">{messages.map(m=><div className={'message '+m.role} key={m.id}>
-        <div className="avatar">{m.role==='assistant'?<Sparkles size={19}/>:<span>나</span>}</div>
-        <div className="bubble"><div className="msglabel">{m.role==='assistant'?'ORBIT':'ME'}</div><p>{m.text}</p>{m.role==='assistant'&&<button className="hear" onClick={()=>readAloud(m.text)} title="답변 음성 재생"><Volume2 size={14}/> 읽어주기</button>}</div>
-      </div>)}</div>}
-      {(busy||activities.length>0)&&<div className="activity"><div className="activity-title"><span>실행 기록</span>{busy&&<LoaderCircle size={15} className="spin"/>}</div>
-        {activities.slice(-8).map(a=><div className={'activity-line '+a.type} key={a.id}><span className="eventglyph">{a.type==='error'?'!':a.type==='tool_result'?'✓':'↳'}</span><div>{a.tool&&<b>{toolNames[a.tool]||a.tool}</b>}<span>{short(a.text,550)}</span>{a.args!=null&&<small>{short(toText(a.args),150)}</small>}</div></div>)}
-        {approval&&<div className="approval"><div className="approval-head"><ShieldCheck size={21}/> 실행 승인 요청</div>
-          <div className="approval-name">{toolNames[approval.tool]||approval.tool}</div><pre>{short(toText(approval.args),900)}</pre>
-          <div className="approval-actions"><button className="reject" disabled={approval.answered} onClick={()=>void respondApproval(false)}><X size={17}/> 거절</button><button className="allow" disabled={approval.answered} onClick={()=>void respondApproval(true)}><Check size={17}/> 실행 승인</button></div>
-        </div>}
-      </div>}
-      <div ref={bottomRef}/>
-    </section>
-    <div className="composer-wrap"><div className={'composer '+(voiceOn?'recording':'')}>
-      <textarea ref={inputRef} value={input} placeholder={voiceOn?'듣고 있습니다. 말씀하세요…':'Orbit에게 할 일을 말씀하세요…'} rows={2} onChange={e=>setInput(e.target.value)} onKeyDown={handleKey}/>
-      <div className="composer-footer"><span className="hint">{voiceOn?<><span className="redpulse"/> 음성 듣는 중</>:'Enter 전송 · Shift+Enter 줄바꿈'}</span><div className="composer-buttons"><button className={'microphone '+(voiceOn?'listening':'')} title="한국어 음성 명령" onClick={toggleVoice} disabled={busy}><Mic size={20}/></button><button className="submit" disabled={!input.trim()||busy} title="보내기" onClick={()=>void send(input)}>{busy?<LoaderCircle className="spin" size={19}/>:<ArrowUp size={21}/>}</button></div></div>
-    </div><div className="disclaimer">LOCAL FIRST · 외부 실행은 승인 후 진행 · 개인 PC에서만 구동</div></div>
-  </main>
-  {sideOpen&&<aside className="sidepanel"><div className="sideheading"><span>WORKSPACE</span><span className="circle-dot"/></div>
-    <div className="sidebar-box"><div className="sidebox-title"><Zap size={18}/> 실행 가능한 도구</div><p>명령이 오면 모델이 필요한 작업을 골라 직접 실행합니다.</p>
-      <div className="capability"><div className="capicon"><Monitor size={19}/></div><div><b>Windows 제어</b><span>프로그램 실행 · 로컬 파일</span></div><Check size={15}/></div>
-      <div className="capability"><div className="capicon"><Globe size={19}/></div><div><b>웹 자동화</b><span>Edge/Chrome 탐색 · 입력 · 클릭</span></div><Check size={15}/></div>
-      <div className="capability"><div className="capicon"><Mic size={19}/></div><div><b>음성 인터페이스</b><span>한국어 인식 · 음성 답변</span></div><Check size={15}/></div>
-      <div className="capability"><div className="capicon"><Cpu size={19}/></div><div><b>모델 선택</b><span>Ollama · 외부 호환 API</span></div><Check size={15}/></div>
-    </div>
-    <div className="sidebar-box"><div className="sidebox-title"><ShieldCheck size={18}/> 작업 권한</div><p>웹 클릭, 정보 입력, 파일 변경은 승인받은 뒤 실행합니다.</p><button className="secondary-action" onClick={()=>setSettings(true)}>AI 연결 설정 <ChevronRight size={16}/></button></div>
-    <div className="sidebar-foot"><span className="footcircle">◈</span> 내 PC 안에서 작동하는 비서<br/><small>실제 전화·문자·결제 기능은 아직 없습니다.</small></div>
-  </aside>}
-  {settings&&<div className="overlay" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)setSettings(false)}}><div className="modal" role="dialog" aria-modal="true" aria-label="AI 연결 설정">
-    <div className="modal-header"><div><p className="eyebrow">CONNECTION</p><h2>AI 연결 설정</h2></div><button className="iconbutton" onClick={()=>setSettings(false)}><X size={20}/></button></div>
-    <p className="modal-lead">로컬 Ollama 또는 OpenAI 호환 모델을 연결합니다. 모델이 없다면 먼저 Ollama에서 내려받아 주세요.</p>
-    <div className="segment"><button className={config.provider==='ollama'?'selected':''} onClick={()=>setConfig({...config,provider:'ollama',base:'http://127.0.0.1:11434'})}>로컬 Ollama</button><button className={config.provider==='openai'?'selected':''} onClick={()=>setConfig({...config,provider:'openai',base:'https://api.openai.com/v1'})}>OpenAI 호환</button></div>
-    <label>API 주소<input value={config.base} onChange={e=>setConfig({...config,base:e.target.value})} placeholder="http://127.0.0.1:11434"/></label>
-    <label>모델 이름<input value={config.model} onChange={e=>setConfig({...config,model:e.target.value})} placeholder="qwen3:4b"/></label>
-    {config.provider==='ollama'?<><button className="secondary-action" onClick={()=>void fetchModels()}>설치된 모델 조회 <ChevronRight size={15}/></button>{modelsError&&<p className="error-text">{modelsError}</p>}{models.length>0&&<div className="model-list">{models.map(m=><button key={m} onClick={()=>setConfig({...config,model:m})}>{m}{config.model===m&&<Check size={15}/>}</button>)}</div>}</>
-    :<label>API 키 (이 브라우저 탭에만 저장)<input type="password" value={config.key} onChange={e=>setConfig({...config,key:e.target.value})} placeholder="sk-..." autoComplete="off"/></label>}
-    <div className="modal-actions"><button onClick={()=>setSettings(false)} className="savebtn"><Check size={17}/> 설정 완료</button></div>
-    <p className="privacy"><CircleHelp size={14}/> 로컬 모드에서는 모델이 내 PC에서 실행됩니다. 외부 API 모드를 쓰면 요청이 지정한 서비스로 전송됩니다.</p>
-  </div></div>}
+ useEffect(()=>{void refresh();const timer=setInterval(()=>void refresh(),10000);return()=>clearInterval(timer);},[refresh]);
+ const action=async(fn:()=>Promise<unknown>,message='저장했습니다.')=>{setWorking(true);setNotice('');try{await fn();setNotice(message);await refresh();}catch(e){setNotice('오류: '+display(e));}finally{setWorking(false);}};
+ const login=()=>void action(async()=>{await send('/api/control/session',{password});setAccess('yes');setPassword('');},'관리 인증 완료');
+ const setField=(key:keyof typeof draft,value:string)=>setDraft(prev=>({...prev,[key]:value}));
+ const saveModel=()=>void action(()=>send('/api/admin/operator',{...draft,owner:draft.owner||undefined,key:draft.key||undefined}),'모델·에이전트 설정을 저장했습니다.');
+ const saveConnectors=()=>void action(()=>send('/api/admin/connectors',secrets),'통신 계정 설정을 저장했습니다.');
+ const detail=(task:Task)=>void action(async()=>{const [w,t]=await Promise.all([request<any>('/api/admin/work/'+task.id),request<any>('/api/admin/threads/'+task.threadId)]);setSelected(task.id);setWork(w);setThread(t);},'업무 기록을 불러왔습니다.');
+ const decision=(p:Pending,a:'답변'|'승인'|'거절')=>void action(()=>send('/api/admin/operator/approval',{action:a,code:p.code,text:answer[p.code]||''}),'에이전트에 전달했습니다.');
+ const diagnostics=()=>void action(async()=>{const res=await send<{checks:Check[]}>('/api/admin/diagnostics',{});setChecks(res.checks);},'계정 API 연결 진단이 완료됐습니다.');
+ const taskRows=dashboard?.tasks||[];
+ const nav=(view:Workspace)=>{setTab(view);setNotice('');setSelected(null);};
+ if(window.location.pathname.endsWith('/join')||window.location.pathname.endsWith('/join.html'))return <Signup/>;
+ if(access==='login')return <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4"><div className="panel w-full max-w-md"><div className="mb-5 flex items-center gap-3"><span className="logo-mark">O</span><h1 className="text-xl font-bold">Orbit 운영 콘솔</h1></div><p className="mb-5 text-sm text-slate-400">관리 암호로 로그인하세요. WhatsApp 이용자 가입과 별도입니다.</p><Field label="관리 암호"><input className="input" value={password} type="password" onChange={e=>setPassword(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')login();}}/></Field><div className="mt-4"><Button disabled={working||!password} onClick={login}>로그인</Button></div>{notice&&<p className="mt-4 text-sm text-rose-300">{notice}</p>}</div></div>;
+ if(access==='loading'&&!dashboard)return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-400"><LoaderCircle className="mr-3 animate-spin"/>운영 상태 연결 중...</div>;
+ return <div className="min-h-screen bg-slate-950 text-slate-200 lg:flex">
+   <aside className="border-b border-slate-800 bg-slate-900/80 lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-64 lg:shrink-0 lg:flex-col lg:border-b-0 lg:border-r">
+    <div className="flex items-center gap-3 px-6 py-6"><span className="logo-mark">O</span><div><div className="text-xl font-semibold tracking-tight text-white">Orbit</div><div className="text-[11px] uppercase tracking-[.15em] text-slate-500">management console</div></div></div>
+    <nav className="flex gap-1 overflow-x-auto px-3 pb-3 lg:flex-1 lg:flex-col lg:pb-0" aria-label="운영 메뉴">{sections.map(([key,label,Icon])=><button type="button" key={key} onClick={()=>nav(key)} className={'nav-link '+(tab===key?'nav-active':'')}><Icon size={17}/><span className="whitespace-nowrap">{label}</span></button>)}</nav>
+    <div className="hidden border-t border-slate-800 p-5 text-xs text-slate-500 lg:block">Node 실행 엔진은 내부에서 동작합니다.<br/>사용자 대화는 WhatsApp에서 진행됩니다.</div>
+   </aside>
+   <main className="mx-auto w-full max-w-7xl flex-1 p-4 pb-14 sm:p-6 lg:p-9">
+    <div className="mb-8 flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs font-semibold uppercase tracking-[.2em] text-cyan-300">Orbit / {sections.find(([k])=>k===tab)?.[1]}</p><h1 className="mt-2 text-2xl font-semibold tracking-tight text-white sm:text-3xl">{sections.find(([k])=>k===tab)?.[1]}</h1><p className="mt-2 text-sm text-slate-500">실제 가입자와 작업 현황을 관리합니다. 업무 판단과 실행은 연결된 AI 에이전트가 담당합니다.</p></div><div className="flex items-center gap-3"><span className="text-xs text-slate-500">최근 동기화 {lastSync||'-'}</span><Button kind="subtle" onClick={()=>void refresh()}><RefreshCw size={15}/> 새로고침</Button></div></div>
+    {notice&&<div className="notice mb-6 flex justify-between gap-3" role="status"><span>{notice}</span><button onClick={()=>setNotice('')} aria-label="닫기"><XCircle size={17}/></button></div>}
+    {tab==='overview'&&<div className="space-y-5">
+     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{[[ '등록 가입자',onboard?.registered??0,Users],['진행 중 업무',dashboard?.counts.open??0,ClipboardList],['실패 업무',dashboard?.counts.failed??0,CircleAlert],['전화 상담',cases.length,Phone]].map(([name,value,Icon],i)=>{const I=Icon as React.ComponentType<{size?:number;className?:string}>;return <div key={i} className="panel flex items-center justify-between"><div><p className="text-sm text-slate-400">{String(name)}</p><div className="mt-2 text-3xl font-semibold text-white">{String(value)}</div></div><I className="text-cyan-400" size={24}/></div>;})}</div>
+     <div className="grid gap-5 xl:grid-cols-[1.5fr_1fr]"><Panel title="최근 접수 업무" actions={<Button kind="subtle" onClick={()=>nav('tasks')}>전체 업무 <ChevronRight size={14}/></Button>}>{taskRows.length?<div className="divide-y divide-slate-800">{taskRows.slice(0,7).map(t=><button key={t.id} className="flex w-full items-center justify-between gap-3 py-3 text-left hover:bg-slate-800/30" onClick={()=>{nav('tasks');void detail(t);}}><div className="min-w-0"><p className="truncate text-sm text-white">{t.title}</p><p className="mt-1 text-xs text-slate-500">{relative(t.updatedAt)}</p></div><Status value={t.status}/></button>)}</div>:<Empty>접수된 업무가 없습니다.</Empty>}</Panel><Panel title="운영 상태"><div className="space-y-4">{[["WhatsApp",dashboard?.channels.whatsapp?.connected],['모델',model?.ready],['전화 통신',dashboard?.phone.configured],['가입 접수',onboard?.config.ready]].map(([n,v])=><div className="flex items-center justify-between" key={String(n)}><span className="text-sm text-slate-300">{String(n)}</span><span className={v?'text-xs text-emerald-300':'text-xs text-amber-300'}>{v?'설정됨':'연결 필요'}</span></div>)}</div><p className="mt-5 text-xs leading-6 text-slate-500">설정 여부는 실제 통신 성공과 다릅니다. 연결 진단에서 공급자 API를 확인하세요.</p></Panel></div>
+     <Panel title="최근 실행 이벤트">{dashboard?.events?.length?<div className="space-y-3">{dashboard.events.slice(0,8).map(e=><div key={e.id} className="flex gap-3 text-sm"><span className="shrink-0 text-xs text-slate-500">{relative(e.time)}</span><span className="text-slate-300">{e.description}</span></div>)}</div>:<Empty>기록 없음</Empty>}</Panel>
+    </div>}
+    {tab==='tasks'&&<div className="grid gap-5 xl:grid-cols-[1.15fr_1fr]"><Panel title="업무 목록">{taskRows.length?<div className="max-h-[65vh] overflow-auto"><div className="divide-y divide-slate-800">{taskRows.map(t=><button onClick={()=>void detail(t)} key={t.id} className={'flex w-full items-start justify-between gap-3 py-3 text-left hover:text-white '+(selected===t.id?'text-cyan-300':'')}><div className="min-w-0 flex-1"><p className="truncate text-sm">{t.title}</p><p className="mt-1 text-xs text-slate-500">{relative(t.createdAt)}{t.error?' · '+t.error:''}</p></div><Status value={t.status}/></button>)}</div></div>:<Empty>업무가 없습니다.</Empty>}</Panel><Panel title="선택 업무의 실제 실행 기록">{selected&&work?<div className="space-y-4"><p className="text-sm">상태: <Status value={work.state||'received'}/></p>{work.report&&<div className="rounded-xl bg-slate-950 p-3 text-sm whitespace-pre-wrap">{work.report}</div>}<div className="max-h-[42vh] space-y-3 overflow-auto">{(work.events||[]).slice(-40).reverse().map((e:any)=><div className="rounded-lg border border-slate-800 p-3" key={e.id}><p className="text-xs text-slate-500">{relative(e.time)} · {e.type}</p><p className="mt-1 break-all text-sm">{e.name||e.detail||e.status||e.reason||'기록됨'}</p></div>)}</div><p className="text-xs text-slate-500">실제 실행 이벤트를 보여주며, 실행 성공과 사용자 목표 달성은 구분합니다.</p>{thread&&<div className="rounded-lg bg-slate-900 p-3"><p className="mb-2 text-xs text-slate-500">메시지 기록</p>{thread.messages?.slice(-10).map((m,i)=><p className="mb-2 break-words text-sm" key={i}><span className="text-cyan-400">{m.direction==='in'?'사용자':'Orbit'}: </span>{m.text}</p>)}</div>}</div>:<Empty>왼쪽에서 업무를 선택하면 실제 실행 내역이 표시됩니다.</Empty>}</Panel>
+      {pending.length>0&&<section className="panel xl:col-span-2"><h2 className="mb-4 font-semibold text-white">사용자 답변·확인 대기</h2>{pending.map(p=><div key={p.code} className="mb-3 rounded-xl border border-amber-700/30 bg-amber-300/5 p-4"><div className="flex flex-wrap items-center gap-3"><Status value="awaiting_input"/><span className="text-sm">{p.tool} · {p.recipient}</span><span className="text-xs text-slate-500">{relative(p.expiresAt)}</span></div><pre className="my-3 overflow-auto whitespace-pre-wrap text-xs text-slate-400">{JSON.stringify(p.args,null,2)}</pre>{p.question&&<input className="input mb-3" placeholder="사용자 답변" value={answer[p.code]||''} onChange={e=>setAnswer(a=>({...a,[p.code]:e.target.value}))}/>}<div className="flex flex-wrap gap-2">{p.question&&<Button disabled={working||!answer[p.code]?.trim()} onClick={()=>decision(p,'답변')}>답변 전달</Button>}<Button kind="subtle" disabled={working} onClick={()=>decision(p,'승인')}>승인</Button><Button kind="danger" disabled={working} onClick={()=>decision(p,'거절')}>거절</Button></div></div>)}</section>}
+    </div>}
+    {tab==='members'&&<Panel title="가입자 목록"><p className="mb-4 text-sm text-slate-400">계정별 개인 메모와 실행 권한은 서버에서 분리됩니다. 관리자는 사용자 번호의 끝 4자리만 확인합니다.</p>{onboard?.accounts.length?<div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="border-b border-slate-700 text-slate-400"><tr><th className="py-3">전화번호</th><th>채널</th><th>가입 일시</th></tr></thead><tbody>{onboard.accounts.map(m=><tr className="border-b border-slate-800" key={m.id}><td className="py-3">{m.phone}</td><td>{m.channel}</td><td>{relative(m.createdAt)}</td></tr>)}</tbody></table></div>:<Empty>등록된 가입자가 없습니다.</Empty>}<div className="mt-5 flex items-center justify-between"><p className="text-xs text-slate-500">가입 진행 대기 {onboard?.pending||0}건</p><a href={routes.join()} target="_blank" className="text-sm text-cyan-300 hover:text-cyan-100">공개 가입 화면 <ExternalLink className="inline" size={14}/></a></div></Panel>}
+    {tab==='calls'&&<div className="grid gap-5 xl:grid-cols-[1fr_1fr]"><Panel title="전화 업무 상태">{cases.length?<div className="divide-y divide-slate-800">{cases.map(c=><div className="py-3" key={c.id}><div className="flex items-center justify-between gap-2"><span className="text-sm font-medium text-white">{c.name}</span><Status value={c.status}/></div><p className="mt-1 text-xs text-slate-400">{c.goal}</p><p className="mt-1 text-xs text-slate-500">{c.number} · 상담 기록 {c.turnCount}건</p></div>)}</div>:<Empty>등록된 전화 상담이 없습니다.</Empty>}</Panel><Panel title="전화 업무 관리"><p className="mb-4 text-sm text-slate-400">이 화면은 상담 현황을 관리합니다. 별도 발신 지시가 있을 때만 통신 API를 호출하며, 실제 성공은 통화 결과로 확인해야 합니다.</p><div className="space-y-3"><Field label="상대방 번호 (+82...)"><input className="input" value={callDraft.number} onChange={e=>setCallDraft(d=>({...d,number:e.target.value}))}/></Field><Field label="상담 대상"><input className="input" value={callDraft.name} onChange={e=>setCallDraft(d=>({...d,name:e.target.value}))}/></Field><Field label="상담 목표"><textarea className="input min-h-24" value={callDraft.goal} onChange={e=>setCallDraft(d=>({...d,goal:e.target.value}))}/></Field><Field label="양보 제한·조건"><textarea className="input min-h-20" value={callDraft.limits} onChange={e=>setCallDraft(d=>({...d,limits:e.target.value}))}/></Field><Button disabled={working||!callDraft.goal||!callDraft.number} onClick={()=>void action(async()=>{await send('/api/cases',{...callDraft});},'전화 상담 건을 등록했습니다. 발신은 별도 명령이 필요합니다.')}>상담 건 등록</Button></div><p className="mt-4 text-xs text-amber-200/80">한국 1588·1544 대표번호 발신과 실시간 협상은 아직 통신망 검증 전입니다.</p></Panel></div>}
+    {tab==='models'&&<Panel title="모델 및 에이전트 설정"><div className="grid gap-4 md:grid-cols-2"><Field label="모델 제공 방식"><select className="input" value={draft.provider} onChange={e=>setField('provider',e.target.value)}><option value="openai">OpenAI 호환 API</option><option value="ollama">Ollama</option></select></Field><Field label="모델 이름"><input className="input" value={draft.model} onChange={e=>setField('model',e.target.value)} placeholder="예: qwen3:8b"/></Field><Field label="모델 API 주소"><input className="input" value={draft.base} onChange={e=>setField('base',e.target.value)} placeholder="http://127.0.0.1:11434"/></Field><Field label="API 키 (변경할 때만 입력)"><input className="input" type="password" value={draft.key} onChange={e=>setField('key',e.target.value)} placeholder={model?.hasKey?'설정됨 · 변경하지 않으려면 비워 두세요':'선택사항'}/></Field><Field label="실행 권한 소유자 WhatsApp 번호"><input className="input" value={draft.owner} onChange={e=>setField('owner',e.target.value)} placeholder={model?.owner||'8210...'}/></Field><Field label="권한 운영 방식"><select className="input" value={draft.approvalMode} onChange={e=>setField('approvalMode',e.target.value)}><option value="autonomous">자율 실행 (기본)</option><option value="review">사용자 확인 모드</option></select></Field><div className="md:col-span-2"><Field label="사용자가 정하는 비서 업무 원칙"><textarea className="input min-h-40" value={draft.instructions} onChange={e=>setField('instructions',e.target.value)} placeholder="모델이 따라야 할 사용자 지침을 이곳에서 설정하세요."/></Field></div></div><div className="mt-5"><Button disabled={working} onClick={saveModel}><Settings2 size={15}/> 설정 저장</Button></div><p className="mt-4 text-xs leading-6 text-slate-500">모델이 계획·도구 선택·진행 보고를 자율적으로 판단합니다. Node 워커는 실행·기억·복구만 담당하며, 이 관리 화면이 비서와 대화를 대신하지 않습니다.</p></Panel>}
+    {tab==='channels'&&<div className="grid gap-5 xl:grid-cols-[1fr_1fr]"><Panel title="사업자 연결 설정"><div className="space-y-3">{Object.entries(connectors).map(([key,c])=><Field key={key} label={key+(c.set?' · 설정됨':' · 미설정')}><input className="input" value={secrets[key]||''} onChange={e=>setSecrets(s=>({...s,[key]:e.target.value}))} placeholder={c.value||'기존 설정 유지 (변경할 때만 입력)'} type={/TOKEN|SECRET|SID/.test(key)?'password':'text'}/></Field>)}</div><div className="mt-5"><Button disabled={working||Object.values(secrets).every(s=>!s.trim())} onClick={saveConnectors}>연결 설정 저장</Button></div></Panel><Panel title="실계정 연결 진단"><p className="mb-4 text-sm leading-6 text-slate-400">API 계정 인증을 확인합니다. 실제 SMS·전화 발신이나 WhatsApp 웹훅 검증을 대신하지 않습니다.</p><Button disabled={working} onClick={diagnostics}><HeartPulse size={15}/> 연결 진단 실행</Button>{checks.length>0&&<div className="mt-5 space-y-3">{checks.map(c=><div className="rounded-xl bg-slate-950 p-3" key={c.name}><div className="flex items-center justify-between"><p className="text-sm font-semibold">{c.name}</p><Status value={c.status}/></div><p className="mt-2 text-xs text-slate-400">{c.detail}</p></div>)}</div>}</Panel></div>}
+    {tab==='activity'&&<div className="grid gap-5 xl:grid-cols-[1fr_1fr]"><Panel title="운영 이벤트">{dashboard?.events?.length?<div className="max-h-[60vh] divide-y divide-slate-800 overflow-auto">{dashboard.events.map(e=><div key={e.id} className="py-3"><p className="text-xs text-slate-500">{relative(e.time)} · {e.event}</p><p className="mt-1 break-words text-sm">{e.description}</p></div>)}</div>:<Empty>이벤트 없음</Empty>}</Panel><Panel title="운영 원칙"><div className="space-y-4 text-sm leading-7 text-slate-300"><p>에이전트 판단은 연결된 모델이 담당합니다. 운영실에서 모델·권한·상태·실행 이력을 관리합니다.</p><p>WhatsApp과 PC 보고는 독립적으로 기록하고, 미전송 건은 재시도합니다.</p><p>외부 서비스의 완료 여부는 실제 확인 결과와 구분해 보고합니다.</p><div className="rounded-lg bg-slate-950 p-4 text-xs text-slate-400">HTTP/Node·FastAPI·모델 연결이 성공해도 실기기 조작이나 고객센터 협상이 성공했다고 뜻하지는 않습니다.</div></div></Panel></div>}
+   </main>
  </div>;
 }
 

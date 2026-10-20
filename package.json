@@ -1,31 +1,8 @@
 {
-  "name": "orbit-assistant",
-  "version": "0.5.0",
-  "private": true,
-  "type": "module",
-  "description": "Orbit WhatsApp AI agent with phone negotiation, verified signup, model routing, PC and Android tools",
-  "engines": {
-    "node": ">=22"
-  },
-  "scripts": {
-    "dev": "vite --host 127.0.0.1",
-    "server": "node server/index.js",
-    "build": "tsc --noEmit && vite build",
-    "start": "node server/index.js",
-    "test": "node --test tests/*.test.js",
-    "android:setup": "node scripts/install-android-tools.js"
-  },
-  "dependencies": {
-    "playwright-core": "^1.55.0",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "lucide-react": "^0.468.0",
-    "qrcode": "^1.5.4"
-  },
-  "devDependencies": {
-    "@types/react": "^19.1.0",
-    "@types/react-dom": "^19.1.0",
-    "typescript": "^5.9.0",
-    "vite": "^7.1.0"
-  }
+  "name":"orbit-assistant","version":"1.0.0","private":true,"type":"module",
+  "description":"Orbit FastAPI management console + Node autonomous operator worker",
+  "engines":{"node":">=22"},
+  "scripts":{"dev":"vite --host 127.0.0.1","server":"node server/index.js","build":"tsc --noEmit && vite build","start":"node server/index.js","test":"node --test tests/*.test.js","android:setup":"node scripts/install-android-tools.js"},
+  "dependencies":{"playwright-core":"^1.55.0","react":"^19.1.0","react-dom":"^19.1.0","lucide-react":"^0.468.0","qrcode":"^1.5.4"},
+  "devDependencies":{"@tailwindcss/vite":"^4.1.0","tailwindcss":"^4.1.0","@types/react":"^19.1.0","@types/react-dom":"^19.1.0","typescript":"^5.9.0","vite":"^7.1.0"}
 }
