@@ -39,7 +39,7 @@ export async function infer(config,messages){
  const url=base+(provider==='ollama'?'/api/chat':'/chat/completions');
  const headers={'Content-Type':'application/json'};if(provider==='openai'&&config.key)headers.Authorization='Bearer '+clamp(config.key,400);
  const body=provider==='ollama'?{model,messages,stream:false,format:'json',options:{temperature:0.3}}:{model,messages,temperature:0.3,response_format:{type:'json_object'}};
- const response=await fetch(url,{method:'POST',headers,body:JSON.stringify(body),signal:AbortSignal.timeout(55000)});
+ const response=await fetch(url,{method:'POST',headers,body:JSON.stringify(body),signal:AbortSignal.timeout(Math.min(Number(config.timeoutMs)||55000,55000))});
  const j=await response.json().catch(()=>({}));if(!response.ok)throw Error('AI 응답 오류 '+response.status+': '+JSON.stringify(j).slice(0,150));
  return provider==='ollama'?j.message?.content:j.choices?.[0]?.message?.content;
 }
@@ -93,7 +93,13 @@ export async function twilioTurn({id,form}){
  const digits=clamp(form.Digits||'',20);
  if(digits){await recordTurn(id,'customer',`상대방이 ${digits} 버튼을 눌렀습니다.`);return sayGather(id,sess.key,'말씀해 주십시오.');}
  if(!heard){return sayGather(id,sess.key,'');}
- const decision=await processTurn(id,heard,sess.config);
+ if(/(상담원.{0,12}연결|상담원을.{0,12}기다|잠시.{0,10}기다려|통화량이 많|순서대로.{0,10}연결|기다리시면.{0,10}연결)/.test(heard)){
+   await recordTurn(id,'customer',heard,{flag:'hold'});
+   return sayGather(id,sess.key,'');
+ }
+ let decision;
+ try{decision=await processTurn(id,heard,sess.config);}
+ catch(e){await recordTurn(id,'system','모델 응답 지연 또는 오류: '+String(e.message).slice(0,140));return sayGather(id,sess.key,'잠시만 기다려 주시겠습니까? 확인하고 있습니다.');}
  if(decision.flag==='finish'){await setCaseStatus(id,'completed');sessions.delete(id);return `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Seoyeon" language="ko-KR">${xml(decision.say)}</Say><Hangup/></Response>`;}
  if(decision.flag==='approval'){await setCaseStatus(id,'needs-approval');return sayGather(id,sess.key,'해당 조건은 의뢰인에게 확인한 후 다시 말씀드리겠습니다.');}
  return sayGather(id,sess.key,decision.say,decision.digits);
