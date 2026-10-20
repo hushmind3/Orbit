@@ -41,7 +41,7 @@ test('owner WhatsApp-like task -> model tool -> approval -> actual execution -> 
   assert.equal((await operatorPending()).length,0);
   const thread=await getThread(got.threadId);assert.ok(thread.messages.some(x=>x.text.includes('사용자 승인 후 파일')));
   assert.equal(await fs.readFile(destination,'utf8'),'after');
-  assert.ok(thread.messages.some(x=>x.text.includes('실행 승인 필요')));
+  assert.ok(thread.messages.some(x=>x.text.includes('이 작업의 실행을 확인해 주세요.')));
   assert.equal(steps,3);
  }finally{await new Promise(resolve=>fake.close(resolve));await fs.rm(root,{force:true,recursive:true});await fs.rm(destination,{force:true});}
 });
