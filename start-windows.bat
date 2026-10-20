@@ -8,14 +8,12 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-if not exist "node_modules\qrcode" (
+if not exist "node_modules\@tailwindcss\vite\package.json" (
   call npm install
   if errorlevel 1 goto failed
 )
-if not exist "dist\index.html" (
-  call npm run build
-  if errorlevel 1 goto failed
-)
+call npm run build
+if errorlevel 1 goto failed
 echo Orbit Node worker: http://127.0.0.1:4786
 echo Existing FastAPI app mounts orbit_control.create_router at /orbit
 echo The PC management console is served by FastAPI, not by a separate chat app.
