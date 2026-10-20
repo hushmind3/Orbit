@@ -128,7 +128,7 @@ function App(){
  return <div className="app">
   <aside className="navrail">
    <div className="mark"><Sparkles size={25} strokeWidth={2.4}/></div>
-   <div className="navbuttons"><button className="navbutton active" title="대화"><MessageCircle size={22}/></button><button className="navbutton" title="기록 초기화" disabled={busy} onClick={()=>void clear()}><RotateCcw size={20}/></button><button className="navbutton" title="설정" onClick={()=>setSettings(true)}><Settings2 size={21}/></button></div>
+   <div className="navbuttons"><button className="navbutton active" title="대화"><MessageCircle size={22}/></button><button className="navbutton" title="전화 협상 비서" onClick={()=>{window.location.href='/phone';}}><Bot size={21}/></button><button className="navbutton" title="기록 초기화" disabled={busy} onClick={()=>void clear()}><RotateCcw size={20}/></button><button className="navbutton" title="설정" onClick={()=>setSettings(true)}><Settings2 size={21}/></button></div>
    <div className="navbottom"><div className={'statusdot '+(serverOnline?'online':'offline')}/><span>LOCAL</span></div>
   </aside>
   <main className="mainpanel">
