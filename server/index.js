@@ -6,10 +6,14 @@ import {fileURLToPath} from 'node:url';
 import {approve,pendingCount,isBusy,runAgent} from './agent.js';
 import {store} from './store.js';
 import {newCase,listCases,findCase,processTurn,callInfo,startCall,validateWebhook,twilioTurn,twilioStatus,adbDevices,adbDial,duplicatePhotos} from './negotiation.js';
+import {getDashboard,getThread,receiveMessage,generateDraft,updateSettings,updateTask,sendReply,sendWhatsApp,verifyWhatsApp,whatsappChallenge,parseWhatsApp} from './inbox.js';
+import {createJoinSession,sessionStatus,consumeJoinMessage,completeDemo,getOnboardingStats,onboardingConfig,isRegisteredWhatsApp} from './onboarding.js';
 
 const ROOT=path.resolve(fileURLToPath(new URL('..',import.meta.url)));
 const DIST=path.join(ROOT,'dist');
 const PORT=4786;
+const joinAttempts=new Map();
+function joinAllowed(remote){const key=String(remote||'unknown');const now=Date.now();const recent=(joinAttempts.get(key)||[]).filter(t=>now-t<15*60*1000);if(recent.length>=5){joinAttempts.set(key,recent);return false;}recent.push(now);joinAttempts.set(key,recent);if(joinAttempts.size>1000)for(const [k,ts] of joinAttempts){if(ts.every(t=>now-t>15*60*1000))joinAttempts.delete(k);}return true;}
 const types={'.html':'text/html; charset=utf-8','.js':'application/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon','.png':'image/png'};
 function json(res,status,obj) {res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(obj));}
 async function rawBody(req,max=30000){const parts=[];let size=0;for await (const chunk of req){size+=chunk.length;if(size>max) throw new Error('요청 크기 초과');parts.push(chunk);}return Buffer.concat(parts).toString('utf8');}
@@ -27,6 +31,34 @@ function authorized(req) {
 async function handle(req,res) {
   try {
     const url=new URL(req.url,'http://127.0.0.1:'+PORT);
+    if(url.pathname==='/webhook/whatsapp') {
+      if(req.method==='GET'){
+        const challenge=whatsappChallenge(url.searchParams);
+        if(challenge===null)return json(res,403,{error:'verification failed'});
+        res.writeHead(200,{'Content-Type':'text/plain; charset=utf-8'});res.end(challenge);return;
+      }
+      if(req.method!=='POST')return json(res,405,{error:'POST only'});
+      const raw=await rawBody(req,180000);
+      if(!verifyWhatsApp(raw,req.headers['x-hub-signature-256']))return json(res,403,{error:'signature invalid'});
+      const messages=parseWhatsApp(JSON.parse(raw));
+      const received=[];
+      for(const msg of messages){
+        const onboarding=await consumeJoinMessage({from:msg.sender,text:msg.text,messageId:msg.messageId});
+        if(onboarding.consumed){
+          if(onboarding.ok)void sendWhatsApp(onboarding.from,'Orbit 연결이 완료되었습니다! 이제 WhatsApp으로 필요한 일을 말씀해 주세요.').catch(e=>console.error('가입 환영 메시지 전송 실패:',e.message));
+          continue;
+        }
+        // Never accept task messages from unregistered accounts.
+        const registration=await isRegisteredWhatsApp(msg.sender);
+        if(!registration)continue;
+        received.push(await receiveMessage(msg));
+      }
+      json(res,200,{ok:true});
+      // Respond immediately to Meta; any generation is tracked in the operator dashboard.
+      const state=await getDashboard();
+      if(state.settings.autoDraft)for(const item of received)if(item.taskId&&!item.duplicate)void generateDraft(item.taskId);
+      return;
+    }
     if (url.pathname.startsWith('/twilio/')) {
       // Twilio webhooks are public endpoints and checked using the provider signature.
       if(req.method!=='POST')return json(res,405,{error:'POST only'});
@@ -38,8 +70,59 @@ async function handle(req,res) {
       if(found[1]==='status'){await twilioStatus(found[2],form);return json(res,200,{ok:true});}
       const response=await twilioTurn({id:found[2],form});res.writeHead(200,{'Content-Type':'application/xml; charset=utf-8','Cache-Control':'no-store'});res.end(response);return;
     }
+    // Customer onboarding never requires a separate installed app.
+    if(req.method==='GET'&&(url.pathname==='/join'||url.pathname==='/join.html')){
+      const data=await fs.readFile(path.join(ROOT,'public','join.html'));
+      res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(data);return;
+    }
+    if(url.pathname==='/onboarding/config'&&req.method==='GET')return json(res,200,onboardingConfig());
+    if(url.pathname==='/onboarding/session'&&req.method==='POST'){
+      const origin=req.headers.origin;
+      if(origin && origin!==`http://${req.headers.host}` && origin!==`https://${req.headers.host}`)return json(res,403,{error:'invalid origin'});
+      if(!joinAllowed(req.socket.remoteAddress))return json(res,429,{error:'연결 요청이 너무 많습니다. 15분 뒤 다시 시도해 주세요.'});
+      const item=await createJoinSession();return json(res,201,item);
+    }
+    if(req.method==='GET'&&url.pathname.startsWith('/onboarding/session/')){
+      const id=url.pathname.slice('/onboarding/session/'.length);
+      if(!/^[0-9a-f-]{36}$/i.test(id))return json(res,400,{error:'invalid session'});
+      const item=await sessionStatus(id);return json(res,item?200:404,item||{error:'not found'});
+    }
+    if(req.method==='GET'&&url.pathname.startsWith('/onboarding/qr/')){
+      const id=url.pathname.slice('/onboarding/qr/'.length);
+      const item=await sessionStatus(id);
+      if(!item || item.status!=='awaiting_whatsapp')return json(res,404,{error:'QR unavailable'});
+      const data=await (await import('./onboarding.js')).getJoinLink(id);
+      if(!data)return json(res,404,{error:'QR link expired'});
+      const qrcode=await import('qrcode');const svg=await qrcode.default.toString(data,{type:'svg',margin:2,width:320,errorCorrectionLevel:'M'});
+      res.writeHead(200,{'Content-Type':'image/svg+xml; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'"});res.end(svg);return;
+    }
     if (url.pathname.startsWith('/api/')) {
       if(!authorized(req)) return json(res,403,{error:'로컬 Orbit 화면에서만 접근 가능합니다.'});
+      if(req.method==='GET'&&url.pathname==='/api/admin/state')return json(res,200,await getDashboard());
+      if(req.method==='GET'&&url.pathname==='/api/admin/onboarding')return json(res,200,await getOnboardingStats());
+      if(req.method==='POST'&&url.pathname==='/api/admin/onboarding/demo'){
+        const b=await body(req);
+        if(b.action==='create')return json(res,201,await createJoinSession({demo:true}));
+        if(b.action==='complete')return json(res,200,await completeDemo(b.id));
+        return json(res,400,{error:'invalid action'});
+      }
+      if(req.method==='GET'&&url.pathname.startsWith('/api/admin/threads/')){
+        const thread=await getThread(url.pathname.split('/')[4]);return json(res,thread?200:404,thread||{error:'대화 없음'});
+      }
+      if(req.method==='POST'&&url.pathname==='/api/admin/simulate'){
+        const b=await body(req);
+        const received=await receiveMessage({channel:'test',sender:String(b.sender||'owner-test'),text:b.text});
+        const state=await getDashboard();
+        if(state.settings.autoDraft&&received.taskId)void generateDraft(received.taskId);
+        return json(res,201,received);
+      }
+      if(req.method==='POST'&&url.pathname==='/api/admin/send')return json(res,200,await sendReply(await body(req)));
+      if(req.method==='POST'&&url.pathname==='/api/admin/settings')return json(res,200,await updateSettings(await body(req)));
+      if(req.method==='POST'&&url.pathname==='/api/admin/task')return json(res,200,await updateTask(await body(req)));
+      if(req.method==='POST'&&url.pathname==='/api/admin/draft'){
+        const b=await body(req);const id=String(b.id||'');if(!id)return json(res,400,{error:'작업 ID 필요'});
+        void generateDraft(id);return json(res,202,{ok:true});
+      }
       if (req.method==='GET' && url.pathname==='/api/health') return json(res,200,{ok:true,busy:isBusy(),approvals:pendingCount(),platform:process.platform});
       if (req.method==='GET' && url.pathname==='/api/history') return json(res,200,{items:await store.history(),notes:await store.notes()});
       if (req.method==='GET' && url.pathname==='/api/models') {
@@ -84,6 +167,10 @@ async function handle(req,res) {
       }
       return json(res,404,{error:'API not found'});
     }
+    if(url.pathname==='/'||url.pathname==='/admin'||url.pathname==='/admin.html'){
+      const data=await fs.readFile(path.join(ROOT,'public','admin.html'));
+      res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(data);return;
+    }
     if(url.pathname==='/phone'||url.pathname==='/phone.html'){
       const data=await fs.readFile(path.join(ROOT,'public','phone.html'));
       res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(data);return;
@@ -104,7 +191,7 @@ async function handle(req,res) {
 const server=http.createServer((req,res)=>{void handle(req,res);});
 server.listen(PORT,process.env.ORBIT_HOST==='0.0.0.0'?'0.0.0.0':'127.0.0.1',()=>{
   console.log(`\nOrbit 실행됨: http://127.0.0.1:${PORT}`);
-  console.log(`문자·음성 명령, Windows 도구, Edge/Chrome 웹 조작 지원`);
+  console.log(`메신저 비서 운영실: http://127.0.0.1:${PORT}/`);
   if(['1','phone'].includes(process.env.ORBIT_OPEN_BROWSER)) {
     const target=`http://127.0.0.1:${PORT}`+(process.env.ORBIT_OPEN_BROWSER==='phone'?'/phone':'');
     try {
