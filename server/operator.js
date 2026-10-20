@@ -14,7 +14,7 @@ import {trackCall} from './call-notifier.js';
 import {mobileDefinitions,runMobile,inspectMobileVision} from './mobile.js';
 import {memberDefinitions,runMember} from './member-tools.js';
 import {isRegisteredWhatsApp} from './onboarding.js';
-import {getWork,workEvent,saveCheckpoint,storeWorkReport,reportDelivered,workFacts,formatWorkReport} from './work-ledger.js';
+import {getWork,workEvent,saveCheckpoint,storeWorkReport,reportDelivered,resumeWork,workFacts,formatWorkReport} from './work-ledger.js';
 
 // Execution limits are resource budgets, not a definition of task completion.
 const budget=()=>Math.max(10,Math.min(600,Number(process.env.ORBIT_MAX_STEPS)||120));
@@ -46,12 +46,16 @@ function mutatePending(fn){const p=writes.then(async()=>{const rows=await readPe
 function queue(recipient,fn){const id=String(recipient),prior=queues.get(id)||Promise.resolve(),job=prior.then(fn),tail=job.catch(()=>{});queues.set(id,tail);void tail.then(()=>{if(queues.get(id)===tail)queues.delete(id);});return job;}
 async function cfg(){const c=await loadConfig();if(!c.base||!c.model)throw Error('모델이 연결되지 않았습니다. 운영실에서 모델 URL과 모델명을 설정하세요.');return c;}
 export async function operatorConfig(){return {...await publicConfig(),twilioConfigured:callReady()};}
-async function invoke(messages,tools){const c=await cfg(),ollama=c.provider==='ollama';const opts={model:c.model,messages,tools:tools.map(t=>({type:'function',function:t})),stream:false};if(!ollama)opts.parallel_tool_calls=false;else opts.options={temperature:0.2};
+async function invoke(messages,tools){const c=await cfg(),ollama=c.provider==='ollama';const opts={model:c.model,messages,stream:false};if(tools.length){opts.tools=tools.map(t=>({type:'function',function:t}));if(!ollama)opts.parallel_tool_calls=false;}if(ollama)opts.options={temperature:0.2};
  const headers={'Content-Type':'application/json'};if(c.key)headers.Authorization='Bearer '+c.key;
  const r=await fetch(c.base.replace(/\/$/,'')+(ollama?'/api/chat':'/chat/completions'),{method:'POST',headers,body:JSON.stringify(opts),signal:AbortSignal.timeout(90000)});
  const data=await r.json().catch(()=>({}));if(!r.ok)throw Error(`모델 응답 오류 ${r.status}: ${JSON.stringify(data).slice(0,180)}`);
  const message=ollama?data.message:data.choices?.[0]?.message;if(!message)throw Error('모델 응답이 비었습니다.');return {message,provider:c.provider};}
-function parsedTool(message){const call=message.tool_calls?.[0];if(!call)return null;let args=call.function?.arguments||{};if(typeof args==='string'){try{args=JSON.parse(args);}catch{args={};}}return {id:call.id||'call_'+randomUUID(),name:call.function?.name,args:args&&typeof args==='object'&&!Array.isArray(args)?args:{}};}
+function parsedTool(message){const call=message.tool_calls?.[0];if(!call)return null;
+ let args=call.function?.arguments??{},invalidArgs=false;
+ if(typeof args==='string'){try{args=JSON.parse(args);}catch{invalidArgs=true;args={};}}
+ if(!args||typeof args!=='object'||Array.isArray(args)){invalidArgs=true;args={};}
+ return {id:call.id||'call_'+randomUUID(),name:call.function?.name,args,invalidArgs};} 
 function recordAssistant(call,provider){return {role:'assistant',content:null,tool_calls:[{id:call.id,type:'function',function:{name:call.name,arguments:provider==='ollama'?call.args:JSON.stringify(call.args)}}]};}
 function toolResult(messages,call,provider,result){messages.push(provider==='ollama'?{role:'tool',tool_name:call.name,content:result}:{role:'tool',tool_call_id:call.id,content:result});}
 async function notify(recipient,taskId,text){const task=await getTask(taskId),thread=await getThread(task.threadId);return sendReply({threadId:thread.id,text:text.slice(0,1550)});}
@@ -122,8 +126,8 @@ async function publish(taskId,recipient,summary,status){
  const review=status==='completed'?await reviewOutcome(taskId,summary):null;
  if(review)await workEvent(taskId,'goal-review',{verified:review.verified,detail:review.reason});
  const rendered=formatWorkReport(work,{summary,status,completionReview:review});
- await storeWorkReport(taskId,rendered.text,rendered.status);await setTaskStatus(taskId,rendered.status);
- try{await notify(recipient,taskId,rendered.text);await reportDelivered(taskId);return {status:rendered.status,report:rendered.text};}
+ await storeWorkReport(taskId,rendered.text,rendered.status);
+ try{await notify(recipient,taskId,rendered.text);await reportDelivered(taskId);await setTaskStatus(taskId,rendered.status);return {status:rendered.status,report:rendered.text};}
  catch(e){await setTaskStatus(taskId,'report_pending',e.message);return {status:'report_pending',report:rendered.text,error:e.message};}
 }
 export async function retryWorkReport(taskId){const work=await getWork(taskId),task=await getTask(taskId);if(!work.report||work.delivered||!task)return false;const thread=await getThread(task.threadId);await notify(thread.sender,taskId,work.report);await reportDelivered(taskId);await setTaskStatus(taskId,work.state);return true;}
@@ -143,6 +147,10 @@ async function loop(taskId,recipient,messages,owner,startStep=0,onEvent=()=>{}){
    return publish(taskId,recipient,String(call.args.summary||''),status);
   }
   messages.push(recordAssistant(call,provider));
+  if(call.invalidArgs){
+   toolResult(messages,call,provider,'도구 인자가 올바른 JSON 객체가 아닙니다. 어떤 작업도 실행하지 않았습니다. 올바른 인자를 다시 만들어 주세요.');
+   await checkpoint(taskId,messages,step+1,recipient,owner);continue;
+  }
   if(call.name==='review_work_history'){const work=await getWork(taskId),count=Math.max(1,Math.min(40,Number(call.args.last)||20));toolResult(messages,call,provider,JSON.stringify(work.events.slice(-count)).slice(0,7800));await checkpoint(taskId,messages,step+1,recipient,owner);continue;}
   if(call.name==='report_progress'){
    const detail=String(call.args.message||'진행 중입니다.').slice(0,1200);
@@ -175,7 +183,7 @@ async function loop(taskId,recipient,messages,owner,startStep=0,onEvent=()=>{}){
   await checkpoint(taskId,messages,step+1,recipient,owner,{...call,operationId},provider);
   let result,ok=true;
   try{result=String(await execute(call,recipient,owner)).slice(0,11000);}catch(e){ok=false;result='도구 실행 실패: '+String(e.message||e).slice(0,1000);}
-  await workEvent(taskId,'tool-result',{operationId,name:call.name,ok,detail:result.slice(0,300)});
+  await workEvent(taskId,'tool-result',{operationId,name:call.name,ok,detail:result.slice(0,600),result:result.slice(0,8500)});
   toolResult(messages,call,provider,result);
   onEvent({type:'tool_result',tool:call.name,result:result.slice(0,800)});
   messages=await compact(messages,step+1,taskId);
@@ -188,14 +196,25 @@ export async function processInboundTask(taskId,{trustedLocal=false,onEvent=()=>
  if(t.channel==='whatsapp'&&!await isRegisteredWhatsApp(t.sender))throw Error('가입된 WhatsApp 계정이 아닙니다.');
  return queue(t.sender,async()=>{
   try{
-   const current=await getTask(taskId);if(['sent','completed','blocked','partial','reported','answered','paused','awaiting_input','report_pending'].includes(current?.status))return {status:'duplicate'};
+   const current=await getTask(taskId);
    const work=await getWork(taskId);
+   if(work.report){
+    if(work.delivered){if(current?.status!==work.state)await setTaskStatus(taskId,work.state);return {status:work.state,report:work.report};}
+    return {status:await retryWorkReport(taskId)?work.state:'report_pending',report:work.report};
+   }
+   if(['sent','completed','blocked','partial','reported','answered','paused','awaiting_input','report_pending'].includes(current?.status))return {status:'duplicate'};
    await setTaskStatus(taskId,'running');
    let messages,step=0;
    if(work.checkpoint){messages=work.checkpoint.messages;step=work.checkpoint.step;
     if(work.checkpoint.pendingCall){const call=work.checkpoint.pendingCall,provider=work.checkpoint.provider;
-     toolResult(messages,call,provider,'서버가 실행 중 중단되어 이 도구의 결과는 확인되지 않았습니다. 같은 일을 반복하기 전에 화면·파일·상태를 읽어 확인하세요.');
-     await workEvent(taskId,'tool-uncertain',{operationId:call.operationId,name:call.name});
+     const recorded=work.events.find(e=>e.type==='tool-result'&&e.operationId===call.operationId);
+     if(recorded){
+      // The tool returned and its result was durably recorded before the crash: never repeat it.
+      toolResult(messages,call,provider,recorded.result??recorded.detail??'이전 도구 실행 결과가 기록됐지만 전체 내용은 복원되지 않았습니다.');
+     }else{
+      toolResult(messages,call,provider,'서버가 실행 중 중단되어 이 도구의 결과는 확인되지 않았습니다. 같은 일을 반복하기 전에 화면·파일·상태를 읽어 확인하세요.');
+      await workEvent(taskId,'tool-uncertain',{operationId:call.operationId,name:call.name});
+     }
      await checkpoint(taskId,messages,step,t.sender,owner);
     }
    }else{
@@ -237,7 +256,7 @@ export async function handleApproval(sender,text,{trustedLocal=false}={}){const 
    if(match[1]==='거절'){await setTaskStatus(row.taskId,'blocked');return {consumed:true,ok:true,reason:'실행을 취소했습니다.'};}
    const operationId=randomUUID();await workEvent(row.taskId,'tool-intent',{operationId,name:row.call.name});
    await checkpoint(row.taskId,row.messages,row.step,row.recipient,row.owner,{...row.call,operationId},row.provider);
-   try{result=String(await execute(row.call,row.recipient,row.owner&&(trustedLocal||await isOwner(row.recipient)))).slice(0,10000);await workEvent(row.taskId,'tool-result',{operationId,name:row.call.name,ok:true,detail:result.slice(0,300)});}catch(e){result='도구 실행 실패: '+e.message;await workEvent(row.taskId,'tool-result',{operationId,name:row.call.name,ok:false,detail:result.slice(0,300)});}
+   try{result=String(await execute(row.call,row.recipient,row.owner&&(trustedLocal||await isOwner(row.recipient)))).slice(0,10000);await workEvent(row.taskId,'tool-result',{operationId,name:row.call.name,ok:true,detail:result.slice(0,600),result:result.slice(0,8500)});}catch(e){result='도구 실행 실패: '+e.message;await workEvent(row.taskId,'tool-result',{operationId,name:row.call.name,ok:false,detail:result.slice(0,600),result:result.slice(0,8500)});}
   }
   const messages=row.messages;toolResult(messages,row.call,row.provider,result);
   await checkpoint(row.taskId,messages,row.step,row.recipient,row.owner);
@@ -246,23 +265,28 @@ export async function handleApproval(sender,text,{trustedLocal=false}={}){const 
   return {consumed:true,ok:true,reason:'응답을 받아 업무를 이어갔습니다.',next:next.status};
  });
 }
-export async function operatorPending(){const rows=await readPending();return rows.filter(x=>x.expiresAt>Date.now()).map(x=>({code:x.code,tool:x.call.name,args:x.call.args,taskId:x.taskId,expiresAt:x.expiresAt,recipient:'***'+x.recipient.slice(-4)}));}
+export async function operatorPending(){const rows=await readPending();return rows.filter(x=>x.expiresAt>Date.now()).map(x=>({code:x.code,tool:x.call.name,args:x.call.args,question:Boolean(x.question),taskId:x.taskId,expiresAt:x.expiresAt,recipient:'***'+x.recipient.slice(-4)}));}
 export async function recoverInterruptedTasks(){
  const d=await getDashboard();
  for(const task of d.tasks.slice().reverse()){
   const work=await getWork(task.id);
-  if(work.report&&!work.delivered){void retryWorkReport(task.id).catch(e=>console.error('보고 재전송 실패:',e.message));continue;}
+  if(work.report){
+   if(!work.delivered)void retryWorkReport(task.id).catch(e=>console.error('보고 재전송 실패:',e.message));
+   else if(task.status!==work.state)await setTaskStatus(task.id,work.state);
+   continue;
+  }
   if(task.status==='received'&&task.channel==='whatsapp'&&d.settings.autoDraft){
    void processInboundTask(task.id).catch(e=>console.error('수신 대기 업무 복구 실패:',e.message));
    continue;
   }
   if(task.status!=='running')continue;
-  // processInboundTask recreates the original context if there is no checkpoint.
-  // An unacknowledged side effect is preserved as uncertain rather than replayed.
-  void processInboundTask(task.id).catch(e=>console.error('중단 업무 복구 실패:',e.message));
+  // A desktop task is authenticated by the localhost route, not an arbitrary WhatsApp sender.
+  const thread=d.threads.find(x=>x.id===task.threadId);
+  const local=thread?.channel==='test'&&thread.sender===LOCAL_SENDER;
+  void processInboundTask(task.id,{trustedLocal:local}).catch(e=>console.error('중단 업무 복구 실패:',e.message));
  }
 }
-export async function resumePausedTask(taskId,sender){const t=await getTask(taskId),thread=t&&await getThread(t.threadId);if(!t||thread.sender!==sender||t.status!=='paused')throw Error('재개할 업무가 없습니다.');const w=await getWork(taskId);if(!w.checkpoint)throw Error('작업 상태가 없습니다.');await setTaskStatus(taskId,'running');return processInboundTask(taskId);}
+export async function resumePausedTask(taskId,sender){const t=await getTask(taskId),thread=t&&await getThread(t.threadId);if(!t||thread.sender!==sender||t.status!=='paused')throw Error('재개할 업무가 없습니다.');const w=await getWork(taskId);if(!w.checkpoint)throw Error('작업 상태가 없습니다.');await resumeWork(taskId);await setTaskStatus(taskId,'running');return processInboundTask(taskId,{trustedLocal:thread.channel==='test'&&sender===LOCAL_SENDER});}
 
 /** The desktop chat uses the same operator, ledger, checkpoints and reporting engine
  * as WhatsApp. It is called only from the localhost-authenticated API route. */
@@ -276,6 +300,12 @@ export async function runLocalOperator({text,config={},emit=()=>{}}){
  if(matched){
   const answer=await handleApproval(LOCAL_SENDER,input,{trustedLocal:true});
   if(answer.consumed){const response=answer.reason||'요청을 처리했습니다.';emit({type:'answer',text:response});emit({type:'done'});return answer;}
+ }
+ if(input==='계속'){
+  const dashboard=await getDashboard();
+  const paused=dashboard.tasks.find(t=>t.status==='paused'&&dashboard.threads.some(th=>th.id===t.threadId&&th.channel==='test'&&th.sender===LOCAL_SENDER));
+  if(paused){const outcome=await resumePausedTask(paused.id,LOCAL_SENDER);const thread=await getThread(paused.threadId);
+   emit({type:'answer',text:outcome.report||thread.messages.filter(m=>m.direction==='out').at(-1)?.text||outcome.status});emit({type:'done'});return outcome;}
  }
  const item=await receiveMessage({channel:'test',sender:LOCAL_SENDER,text:input});
  const outcome=await processInboundTask(item.taskId,{trustedLocal:true,onEvent:emit});

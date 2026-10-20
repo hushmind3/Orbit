@@ -149,7 +149,7 @@ async function handle(req,res) {
         return json(res,202,item);
       }
       if(req.method==='POST'&&url.pathname==='/api/admin/operator/approval'){
-        const b=await body(req);const config=await loadConfig();return json(res,200,await handleApproval(String(config.owner||'').replace(/\D/g,''),String(b.action||'승인')+' '+String(b.code||'')));
+        const b=await body(req);const config=await loadConfig();return json(res,200,await handleApproval(String(config.owner||'').replace(/\D/g,''),String(b.action||'승인')+' '+String(b.code||'')+(b.text?' '+String(b.text):'')));
       }
       if(req.method==='POST'&&url.pathname==='/api/admin/simulate'){
         const b=await body(req);

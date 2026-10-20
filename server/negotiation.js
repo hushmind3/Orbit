@@ -96,13 +96,14 @@ export function validateWebhook({id,token,url,form,signature}){
 }
 export async function twilioTurn({id,form}){
  const sess=sessions.get(id);if(!sess)throw Error('전화 세션을 찾을 수 없습니다. 서버 재시작 후 확인해 주세요.');
+ if(sess.ended)return '<?xml version="1.0"?><Response><Hangup/></Response>';
  const c=await findCase(id);if(!c)throw Error('상담 없음');
  const raw=clamp(form.SpeechResult||'',1400);const digits=clamp(form.Digits||'',10);
  // Initial TwiML is receive-first, so automated ARS can finish its opening menu.
  if(!sess.started){sess.started=true;await persistSessions();return sayGather(id,sess.key);}
  if(!raw&&!digits){
   sess.emptyRounds=(sess.emptyRounds||0)+1;
-  if(sess.emptyRounds>=135){await recordTurn(id,'system','통화 중 입력이 장시간 없어 종료했습니다.');await setCaseStatus(id,'timeout');sessions.delete(id);await persistSessions();return '<?xml version="1.0"?><Response><Hangup/></Response>';}
+  if(sess.emptyRounds>=135){await recordTurn(id,'system','통화 중 입력이 장시간 없어 종료했습니다.');await setCaseStatus(id,'timeout');sess.ended=true;await persistSessions();return '<?xml version="1.0"?><Response><Hangup/></Response>';}
   if(sess.emptyRounds%30===0){await recordTurn(id,'system',`ARS 대기 중, 조용한 구간 ${sess.emptyRounds*20}초 경과 (정확한 연결 상태 미확인)`);}
   await persistSessions();return sayGather(id,sess.key);
  }
@@ -119,11 +120,14 @@ export async function twilioTurn({id,form}){
  catch(e){await recordTurn(id,'system','모델 응답 지연 또는 오류: '+String(e.message).slice(0,140));return sayGather(id,sess.key,'잠시만 기다려 주시겠습니까? 확인하고 있습니다.');}
  if(decision.flag==='hold')return sayGather(id,sess.key);
  if(decision.flag==='finish'){
-  await setCaseStatus(id,'completed');sessions.delete(id);await persistSessions();
+  // The model ending the dialogue does not prove the requested cancellation or refund succeeded.
+  await setCaseStatus(id,'outcome-unverified');
+  await recordTurn(id,'system','AI가 대화를 마쳤습니다. 실제 상담 목표 달성 여부는 확인되지 않았습니다.');
+  sess.ended=true;await persistSessions();
   return `<?xml version="1.0"?><Response><Say voice="Polly.Seoyeon" language="ko-KR">${xml(decision.say||'감사합니다.')}</Say><Hangup/></Response>`;
  }
  if(decision.flag==='approval'){
-  await setCaseStatus(id,'needs-approval');sessions.delete(id);await persistSessions();
+  await setCaseStatus(id,'needs-approval');sess.ended=true;await persistSessions();
   await recordTurn(id,'system','사용자 확인이 필요한 조건이므로 합의하지 않고 통화를 종료했습니다.');
   return `<?xml version="1.0"?><Response><Say voice="Polly.Seoyeon" language="ko-KR">의뢰인에게 확인한 뒤 다시 연락드리겠습니다. 감사합니다.</Say><Hangup/></Response>`;
  }
@@ -131,12 +135,19 @@ export async function twilioTurn({id,form}){
 }
 export async function twilioStatus(id,form){
  const callStatus=clamp(form.CallStatus,80)||'unknown';
+ const session=sessions.get(id);
+ // Keep the signed callback token for Twilio's delayed/retried status webhooks.
+ // Deleting it at voice hangup caused valid completion callbacks to be rejected.
+ if(session?.terminalStatus)return;
  const current=await findCase(id);
  // A telephone platform's 'completed' means the call ended, NOT that negotiation succeeded.
- if(current?.status==='needs-approval'&&callStatus==='completed'){
-  await recordTurn(id,'system','통신상태: completed (조건 확인이 필요하여 협상은 미완료)');
+ if(current?.status==='needs-approval'||current?.status==='outcome-unverified'){
+  await recordTurn(id,'system',`통신상태: ${callStatus} (업무 결과: ${current.status} 유지)`);
+ }else if(callStatus==='completed'){
+  await setCaseStatus(id,'call-ended-unverified');
+  await recordTurn(id,'system','전화가 종료됐습니다. 고객센터 업무 목표 달성 여부는 확인되지 않았습니다.');
  }else await setCaseStatus(id,callStatus).catch(()=>{});
- if(['completed','failed','busy','no-answer','canceled'].includes(callStatus)){sessions.delete(id);await persistSessions();}
+ if(['completed','failed','busy','no-answer','canceled'].includes(callStatus)&&session){session.ended=true;session.terminalStatus=callStatus;await persistSessions();}
 }
 export async function adbDevices(){
  try {const {stdout}=await exec(adbExecutable(),['devices'],{timeout:4000,windowsHide:true});return stdout.trim();}

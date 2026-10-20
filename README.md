@@ -1,5 +1,12 @@
 # Orbit 0.7 — 모델 주도 자율 비서 · 작업 원장 · 확실한 보고
 
+## 2026-10-20 사전 오류 점검
+
+- 모델·서버·WhatsApp 연결 전에 재현 가능한 실행 결함을 수정했습니다. 검사 범위와 미검증 항목은 [`docs/PREFLIGHT_AUDIT.md`](docs/PREFLIGHT_AUDIT.md)에 기록했습니다.
+- `npm test`: **36개 통과** (모의 모델·통신사·ADB 및 HTTP 통합 시나리오 포함).
+- GitHub Actions가 `npm install`, `npm test`, `npm run build`를 자동 검사합니다. **실계정·실통화 성공 및 로컬 환경의 프론트 빌드까지 보장한다는 의미는 아닙니다.**
+
+
 > **현재 단계:** GitHub 소스에서 실행 엔진을 통합하고 모의 모델/ADB/WhatsApp 테스트를 수행했습니다. Meta 실제 가입, 실제 통화, 갤럭시 실기기는 별도 검증이 필요합니다.
 
 ## 0.7에서 바뀐 원칙

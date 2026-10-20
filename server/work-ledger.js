@@ -14,6 +14,7 @@ export async function workEvent(id,type,info={}){const event={id:randomUUID(),ty
 export async function saveCheckpoint(id,data){return edit(id,w=>{w.checkpoint=data;w.state=data?.state||'running';});}
 export async function storeWorkReport(id,report,status){return edit(id,w=>{w.report=asText(report,4000);w.delivered=false;w.state=status;if(status!=='paused')w.checkpoint=null;w.events.push({id:randomUUID(),type:'finish',time:new Date().toISOString(),status});});}
 export async function reportDelivered(id){return edit(id,w=>{w.delivered=true;w.deliveredAt=new Date().toISOString();});}
+export async function resumeWork(id){return edit(id,w=>{if(w.state!=='paused'||!w.checkpoint)throw Error('재개할 체크포인트가 없습니다.');w.report=null;w.delivered=false;w.state='running';});}
 export function workFacts(work){const pending=new Map(),done=[];for(const event of work.events){if(event.type==='tool-intent')pending.set(event.operationId,event);if(event.type==='tool-result'){pending.delete(event.operationId);done.push(event);}}return {done,pending:[...pending.values()],ok:done.filter(e=>e.ok).length,failed:done.filter(e=>!e.ok).length};}
 /** Never copy model assertions into evidence. All facts below come from executed tools. */
 export function formatWorkReport(work,{summary,status='reported',completionReview=null}={}){

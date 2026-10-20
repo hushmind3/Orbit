@@ -107,9 +107,10 @@ function App(){
  const respondApproval=async(allowed:boolean)=>{
    if(!approval||approval.answered)return;
    const id=approval.id;setApproval({...approval,answered:true});
-   try{const response=await fetch('/api/approval',{method:'POST',headers:HEADERS,body:JSON.stringify({id,allow:allowed})});
-     const json=await response.json();if(!json.ok)throw new Error('승인 요청이 만료되었습니다.');
-     setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'status',text:allowed?'사용자가 작업을 승인했습니다.':'사용자가 작업을 거부했습니다.'}]);
+   try{
+     // All approvals are now ordinary assistant messages handled by the same work engine.
+     // Never call the removed /api/approval endpoint.
+     await send(`${allowed?'승인':'거절'} ${id}`);
    }catch(err){setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'error',text:String(err)}]);}
    finally{setApproval(null);}
  };
