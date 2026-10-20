@@ -14,7 +14,7 @@ import {trackCall} from './call-notifier.js';
 import {mobileDefinitions,runMobile,inspectMobileVision} from './mobile.js';
 import {memberDefinitions,runMember} from './member-tools.js';
 import {isRegisteredWhatsApp} from './onboarding.js';
-import {getWork,workEvent,saveCheckpoint,storeWorkReport,reportDelivered,resumeWork,workFacts,formatWorkReport} from './work-ledger.js';
+import {getWork,workEvent,saveCheckpoint,storeWorkReport,reportDelivered,resumeWork,workFacts,formatWorkReport,reconcileExecution} from './work-ledger.js';
 
 // Execution limits are resource budgets, not a definition of task completion.
 const budget=()=>Math.max(10,Math.min(600,Number(process.env.ORBIT_MAX_STEPS)||120));
@@ -25,7 +25,8 @@ const managementTools=[
  {name:'finish_task',description:'업무의 최종 결과를 사용자에게 보고하고 마친다. 사용자가 요청한 목표가 달성되었는지 판단하고, 남은 일이나 불확실성을 솔직하게 전한다. 도구 결과와 실제 성공을 혼동하지 않는다.',parameters:{type:'object',properties:{status:{type:'string',enum:['completed','partial','blocked']},summary:{type:'string',description:'사용자가 바로 이해할 자연스러운 최종 업무 보고: 한 일, 확인된 결과, 못한 일'}},required:['status','summary']}},
  {name:'report_progress',description:'장시간 작업 중 사용자가 알아야 할 의미 있는 변화가 있을 때만 WhatsApp에 중간 진행상황 보고. 사소한 매 단계는 보고하지 않는다.',parameters:{type:'object',properties:{message:{type:'string'}},required:['message']}},
  {name:'review_work_history',description:'실행 원장에서 현재 업무의 과거 도구 실행·오류·사용자 답변 내역을 읽는다. 대화가 길어져 맥락이 요약되더라도 이전 행동을 다시 확인할 수 있다.',parameters:{type:'object',properties:{last:{type:'integer',description:'최근 몇 개 사건을 조회할지 (최대 40)'}},required:[]}},
- {name:'request_user_input',description:'업무를 자율적으로 진행하다 사용자의 선택이나 새로운 정보가 정말 필요할 때 질문하고 기다린다. 일반적인 클릭/입력마다 사용하지 않는다.',parameters:{type:'object',properties:{question:{type:'string'}},required:['question']}}
+ {name:'request_user_input',description:'업무를 자율적으로 진행하다 사용자의 선택이나 새로운 정보가 정말 필요할 때 질문하고 기다린다. 일반적인 클릭/입력마다 사용하지 않는다.',parameters:{type:'object',properties:{question:{type:'string'}},required:['question']}},
+ {name:'reconcile_uncertain_execution',description:'서버가 종료되어 결과를 모르는 이전 실행을 새로 조회한 증거와 연결한다. 실행을 다시 하기 전에 상태 조회 후 review_work_history에서 조회 결과 ID를 확인하라. 추측만으로 확인 처리하지 않는다.',parameters:{type:'object',properties:{operationId:{type:'string'},verificationEventId:{type:'string'},outcome:{type:'string',enum:['confirmed_executed','confirmed_not_executed']},reason:{type:'string'}},required:['operationId','verificationEventId','outcome','reason']}}
 ];
 const ownerTools=[...definitions,...mobileDefinitions,...memberDefinitions,...extraTools,...managementTools];
 const customerTools=[...memberDefinitions,...managementTools];
@@ -59,7 +60,7 @@ function parsedTool(message){const call=message.tool_calls?.[0];if(!call)return 
 function recordAssistant(call,provider){return {role:'assistant',content:null,tool_calls:[{id:call.id,type:'function',function:{name:call.name,arguments:provider==='ollama'?call.args:JSON.stringify(call.args)}}]};}
 function toolResult(messages,call,provider,result){messages.push(provider==='ollama'?{role:'tool',tool_name:call.name,content:result}:{role:'tool',tool_call_id:call.id,content:result});}
 async function notify(recipient,taskId,text){const task=await getTask(taskId),thread=await getThread(task.threadId);return sendReply({threadId:thread.id,text:text.slice(0,1550)});}
-async function execute(call,recipient,owner){if(!toolNames.has(call.name))throw Error('알 수 없는 도구');
+async function execute(call,recipient,owner,taskId){if(!toolNames.has(call.name))throw Error('알 수 없는 도구');
  if(memberNames.has(call.name))return runMember(call.name,call.args,recipient);
  if(!owner)throw Error('이 계정에는 해당 장치의 실행 권한이 없습니다.');
  if(call.name==='android_vision_screen')return inspectMobileVision(await cfg());
@@ -73,7 +74,12 @@ async function execute(call,recipient,owner){if(!toolNames.has(call.name))throw 
   if(!callReady())throw Error('실제 전화 통신 사업자가 연결돼 있지 않습니다.');
   const {number,goal,name,facts,limits}=call.args;
   if(!/^\+[1-9]\d{6,14}$/.test(String(number||'')))throw Error('국제전화 형식이 필요합니다.');
-  const c=await newCase({number,goal,name,facts,limits});const model=await cfg();const result=await startCall(c.id,number,{provider:model.provider,base:model.base,model:model.model,key:model.key});await trackCall(c.id,recipient);
+  const c=await newCase({number,goal,name,facts,limits});const model=await cfg();const local=recipient===LOCAL_SENDER;
+  const task=local&&taskId?await getTask(taskId):null;
+  const actualRecipient=local?String(model.owner||'').replace(/\D/g,''):recipient;
+  await trackCall(c.id,{recipient:actualRecipient,threadId:local?task?.threadId:null});
+  // Even if the carrier request times out, preserve the recipient; the call may have started.
+  const result=await startCall(c.id,number,{provider:model.provider,base:model.base,model:model.model,key:model.key});
   return JSON.stringify({caseId:c.id,callSid:result.sid,status:result.status,note:'발신 접수, 통화 및 상담 목표 달성은 아직 검증되지 않음'});
  }
  const result=await runTool(call.name,call.args,{store});
@@ -111,7 +117,7 @@ async function reviewOutcome(taskId,summary){
 사용자가 요청한 업무의 핵심 조건을 충족했는지, 도구 결과가 이를 뒷받침하는지 비교하십시오. 다른 작업의 결과 또는 비서의 주장만으로 성공을 인정하지 마십시오.
 실패 후 복구해 실제 목표에 도달한 경우는 성공으로 인정할 수 있습니다. 확인되지 않으면 false입니다.
 반드시 JSON 객체만 반환: {"verified":boolean,"reason":"최대 200자 근거"}.`},
-  {role:'user',content:JSON.stringify({userGoal:requested,agentClaim:summary,observedToolOutcomes:observations,unresolvedOperations:facts.pending.map(e=>e.name)},null,2)}
+  {role:'user',content:JSON.stringify({userGoal:requested,agentClaim:summary,observedToolOutcomes:observations,unresolvedOperations:facts.pending.map(e=>e.name),reconciledOperations:facts.reconciled},null,2)}
  ];
  try{
   const {message}=await invoke(prompt,[]);
@@ -152,6 +158,11 @@ async function loop(taskId,recipient,messages,owner,startStep=0,onEvent=()=>{}){
    await checkpoint(taskId,messages,step+1,recipient,owner);continue;
   }
   if(call.name==='review_work_history'){const work=await getWork(taskId),count=Math.max(1,Math.min(40,Number(call.args.last)||20));toolResult(messages,call,provider,JSON.stringify(work.events.slice(-count)).slice(0,7800));await checkpoint(taskId,messages,step+1,recipient,owner);continue;}
+  if(call.name==='reconcile_uncertain_execution'){
+   let result;try{result=JSON.stringify({ok:true,...await reconcileExecution(taskId,call.args)});}
+   catch(e){result='검증 연결 실패: '+String(e.message||e)+'; 원래 미확인 기록은 보존됩니다.';}
+   toolResult(messages,call,provider,result);await checkpoint(taskId,messages,step+1,recipient,owner);continue;
+  }
   if(call.name==='report_progress'){
    const detail=String(call.args.message||'진행 중입니다.').slice(0,1200);
    try{
@@ -182,9 +193,9 @@ async function loop(taskId,recipient,messages,owner,startStep=0,onEvent=()=>{}){
   await workEvent(taskId,'tool-intent',{operationId,name:call.name});
   await checkpoint(taskId,messages,step+1,recipient,owner,{...call,operationId},provider);
   let result,ok=true;
-  try{result=String(await execute(call,recipient,owner)).slice(0,11000);}catch(e){ok=false;result='도구 실행 실패: '+String(e.message||e).slice(0,1000);}
-  await workEvent(taskId,'tool-result',{operationId,name:call.name,ok,detail:result.slice(0,600),result:result.slice(0,8500)});
-  toolResult(messages,call,provider,result);
+  try{result=String(await execute(call,recipient,owner,taskId)).slice(0,11000);}catch(e){ok=false;result='도구 실행 실패: '+String(e.message||e).slice(0,1000);}
+  const evidenceEventId=await workEvent(taskId,'tool-result',{operationId,name:call.name,ok,detail:result.slice(0,600),result:result.slice(0,8500)});
+  toolResult(messages,call,provider,result+(ok?'\n[실행 원장 증거 ID: '+evidenceEventId+']':''));
   onEvent({type:'tool_result',tool:call.name,result:result.slice(0,800)});
   messages=await compact(messages,step+1,taskId);
   await checkpoint(taskId,messages,step+1,recipient,owner);
@@ -212,7 +223,7 @@ export async function processInboundTask(taskId,{trustedLocal=false,onEvent=()=>
       // The tool returned and its result was durably recorded before the crash: never repeat it.
       toolResult(messages,call,provider,recorded.result??recorded.detail??'이전 도구 실행 결과가 기록됐지만 전체 내용은 복원되지 않았습니다.');
      }else{
-      toolResult(messages,call,provider,'서버가 실행 중 중단되어 이 도구의 결과는 확인되지 않았습니다. 같은 일을 반복하기 전에 화면·파일·상태를 읽어 확인하세요.');
+      toolResult(messages,call,provider,'서버가 실행 중 중단되어 이 도구의 결과는 확인되지 않았습니다. 원래 작업 ID: '+call.operationId+'. 재실행 전에 현재 상태를 조회하고 reconcile_uncertain_execution으로 검증 근거를 연결하세요.');
       await workEvent(taskId,'tool-uncertain',{operationId:call.operationId,name:call.name});
      }
      await checkpoint(taskId,messages,step,t.sender,owner);
@@ -220,10 +231,10 @@ export async function processInboundTask(taskId,{trustedLocal=false,onEvent=()=>
    }else{
     const unresolved=workFacts(work).pending;
     if(unresolved.length){
-     await workEvent(taskId,'recovery-uncertain',{detail:'체크포인트 없이 중단된 미확인 실행 '+unresolved.map(x=>x.name).join(', ').slice(0,240)});
+     await workEvent(taskId,'recovery-uncertain',{detail:'체크포인트 없이 중단된 미확인 실행 '+unresolved.map(x=>x.name+'('+x.operationId+')').join(', ').slice(0,240)});
     }
     const c=await loadConfig();const prefix=(owner?SYSTEM:SYSTEM+'\n이 이용자에게는 본인 보관함과 공개 웹 도구만 연결돼 있습니다. 다른 사용자의 PC/휴대폰/전화는 사용할 수 없습니다.')+(c.instructions?'\n사용자가 지정한 작업 원칙: '+c.instructions:'');
-    messages=[{role:'system',content:prefix},{role:'user',content:`현재 요청: ${current.title}`},...(unresolved.length?[{role:'user',content:'⚠️ 이전 실행 중 미확인 작업이 남았습니다: '+unresolved.map(x=>x.name).join(', ')+'. 먼저 현재 상태를 확인하고 중복 실행을 피하세요.'}]:[]),...t.messages.slice(-20).map(m=>({role:m.direction==='in'?'user':'assistant',content:m.text}))];
+    messages=[{role:'system',content:prefix},{role:'user',content:`현재 요청: ${current.title}`},...(unresolved.length?[{role:'user',content:'⚠️ 이전 실행 중 미확인 작업이 남았습니다: '+unresolved.map(x=>x.name).join(', ')+'. 먼저 현재 상태를 확인하고 reconcile_uncertain_execution으로 검증 근거를 연결해 중복 실행을 피하세요.'}]:[]),...t.messages.slice(-20).map(m=>({role:m.direction==='in'?'user':'assistant',content:m.text}))];
     await checkpoint(taskId,messages,0,t.sender,owner);
    }
    return await loop(taskId,t.sender,messages,owner,step,onEvent);
@@ -256,7 +267,7 @@ export async function handleApproval(sender,text,{trustedLocal=false}={}){const 
    if(match[1]==='거절'){await setTaskStatus(row.taskId,'blocked');return {consumed:true,ok:true,reason:'실행을 취소했습니다.'};}
    const operationId=randomUUID();await workEvent(row.taskId,'tool-intent',{operationId,name:row.call.name});
    await checkpoint(row.taskId,row.messages,row.step,row.recipient,row.owner,{...row.call,operationId},row.provider);
-   try{result=String(await execute(row.call,row.recipient,row.owner&&(trustedLocal||await isOwner(row.recipient)))).slice(0,10000);await workEvent(row.taskId,'tool-result',{operationId,name:row.call.name,ok:true,detail:result.slice(0,600),result:result.slice(0,8500)});}catch(e){result='도구 실행 실패: '+e.message;await workEvent(row.taskId,'tool-result',{operationId,name:row.call.name,ok:false,detail:result.slice(0,600),result:result.slice(0,8500)});}
+   try{result=String(await execute(row.call,row.recipient,row.owner&&(trustedLocal||await isOwner(row.recipient)),row.taskId)).slice(0,10000);await workEvent(row.taskId,'tool-result',{operationId,name:row.call.name,ok:true,detail:result.slice(0,600),result:result.slice(0,8500)});}catch(e){result='도구 실행 실패: '+e.message;await workEvent(row.taskId,'tool-result',{operationId,name:row.call.name,ok:false,detail:result.slice(0,600),result:result.slice(0,8500)});}
   }
   const messages=row.messages;toolResult(messages,row.call,row.provider,result);
   await checkpoint(row.taskId,messages,row.step,row.recipient,row.owner);

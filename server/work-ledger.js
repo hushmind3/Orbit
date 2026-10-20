@@ -15,10 +15,24 @@ export async function saveCheckpoint(id,data){return edit(id,w=>{w.checkpoint=da
 export async function storeWorkReport(id,report,status){return edit(id,w=>{w.report=asText(report,4000);w.delivered=false;w.state=status;if(status!=='paused')w.checkpoint=null;w.events.push({id:randomUUID(),type:'finish',time:new Date().toISOString(),status});});}
 export async function reportDelivered(id){return edit(id,w=>{w.delivered=true;w.deliveredAt=new Date().toISOString();});}
 export async function resumeWork(id){return edit(id,w=>{if(w.state!=='paused'||!w.checkpoint)throw Error('재개할 체크포인트가 없습니다.');w.report=null;w.delivered=false;w.state='running';});}
-export function workFacts(work){const pending=new Map(),done=[];for(const event of work.events){if(event.type==='tool-intent')pending.set(event.operationId,event);if(event.type==='tool-result'){pending.delete(event.operationId);done.push(event);}}return {done,pending:[...pending.values()],ok:done.filter(e=>e.ok).length,failed:done.filter(e=>!e.ok).length};}
+export function workFacts(work){const pending=new Map(),done=[],reconciled=[];for(const event of work.events){if(event.type==='tool-intent')pending.set(event.operationId,event);if(event.type==='tool-result'){pending.delete(event.operationId);done.push(event);}if(event.type==='tool-reconciled'&&pending.has(event.operationId)){pending.delete(event.operationId);reconciled.push(event);}}return {done,pending:[...pending.values()],reconciled,ok:done.filter(e=>e.ok).length,failed:done.filter(e=>!e.ok).length};}
+export async function reconcileExecution(taskId,{operationId,verificationEventId,outcome,reason}={}){
+ if(!['confirmed_executed','confirmed_not_executed'].includes(outcome)||!String(reason||'').trim()||String(reason).length>800)throw Error('재확인 결과와 근거가 필요합니다.');
+ return edit(taskId,work=>{const events=work.events||[],intentIndex=events.findIndex(e=>e.type==='tool-intent'&&e.operationId===operationId);
+  if(intentIndex<0)throw Error('현재 업무의 미확인 실행 ID가 아닙니다.');
+  if(!workFacts(work).pending.some(e=>e.operationId===operationId))throw Error('해당 실행은 이미 확인되거나 처리됐습니다.');
+  const index=events.findIndex((e,i)=>i>intentIndex&&e.id===verificationEventId&&e.type==='tool-result'&&e.ok===true);
+  if(index<0)throw Error('원래 실행 이후 기록된 성공한 조회/확인 도구 결과 ID가 필요합니다.');
+  const proof=events[index],allowed=new Set(['android_read_screen','android_status','android_duplicate_photos','browser_read','list_files','search_files','read_text_file','list_personal_notes','read_public_webpage']);
+  if(!allowed.has(proof.name))throw Error('읽기/상태 확인 도구의 결과만 검증 증거로 사용할 수 있습니다.');
+  work.events.push({id:randomUUID(),type:'tool-reconciled',time:new Date().toISOString(),operationId,verificationEventId,outcome,reason:String(reason).slice(0,800),verificationTool:proof.name,verificationDetail:String(proof.detail||'').slice(0,450)});
+  work.events=work.events.slice(-650);return {operationId,outcome,verificationEventId,verificationTool:proof.name};
+ });
+}
+
 /** Never copy model assertions into evidence. All facts below come from executed tools. */
 export function formatWorkReport(work,{summary,status='reported',completionReview=null}={}){
- const {done,pending,ok,failed}=workFacts(work);
+ const {done,pending,reconciled,ok,failed}=workFacts(work);
  let actual=status;
  if(status==='completed'&&(!ok||pending.length||completionReview?.verified!==true))actual='partial';
  const marker=actual==='completed'?'✅':actual==='blocked'?'⛔':actual==='failed'?'❌':actual==='paused'?'⏸️':actual==='partial'?'⚠️':'📝';
@@ -26,6 +40,7 @@ export function formatWorkReport(work,{summary,status='reported',completionRevie
  const displaySummary=status==='completed'&&actual!=='completed'?'원래 목표 달성은 확인되지 않았습니다. 모델이 제시한 결과(미검증): '+asText(summary,720):asText(summary||'처리 결과를 확인해 주세요.',950);
  const lines=[`${marker} Orbit 업무 보고 · ${heading}`,displaySummary];
  if(done.length){lines.push(`실행 기록: 성공 ${ok}건 · 오류 ${failed}건`);const sample=done.slice(-5).map(e=>`${e.ok?'✓':'✗'} ${e.name}: ${asText(e.detail,125)}`);lines.push(...sample);}
+ if(reconciled.length)lines.push('중단 작업 재확인 '+reconciled.length+'건: 직접 조회한 기록을 바탕으로 처리했습니다.');
  if(pending.length)lines.push(`⚠️ 결과를 확인하지 못한 실행 ${pending.length}건이 있습니다. 재실행 전에 상태 확인이 필요합니다.`);
  if(status==='completed'&&actual!=='completed')lines.push('완료라고 단정할 실행 근거가 부족하여 일부 진행으로 표시했습니다. '+asText(completionReview?.reason||'',180));
  return {status:actual,text:lines.join('\n').slice(0,1570)};

@@ -12,7 +12,7 @@ import {isOwner,processOwnerTask,processInboundTask,handleApproval,operatorConfi
 import {getWork} from './work-ledger.js';
 import {saveConfig,loadConfig} from './config.js';
 import {bootstrapConnectors,connectorSummary,updateConnectors} from './connectors.js';
-import {notifyCallCompletion} from './call-notifier.js';
+import {trackCall,queueCallCompletion,flushCallNotifications} from './call-notifier.js';
 import {checkConnections} from './diagnostics.js';
 
 const ROOT=path.resolve(fileURLToPath(new URL('..',import.meta.url)));
@@ -83,7 +83,7 @@ async function handle(req,res) {
       const raw=await rawBody(req,10000);const form=Object.fromEntries(new URLSearchParams(raw));
       const canonical=(process.env.ORBIT_PUBLIC_URL||'').replace(/\/+$/,'')+url.pathname+url.search;
       if(!validateWebhook({id:found[2],token:url.searchParams.get('token'),url:canonical,form,signature:req.headers['x-twilio-signature']}))return json(res,403,{error:'Twilio signature invalid'});
-      if(found[1]==='status'){await twilioStatus(found[2],form);json(res,200,{ok:true});void notifyCallCompletion(found[2],form.CallStatus).catch(e=>console.error('전화 결과 알림 실패:',e.message));return;}
+      if(found[1]==='status'){await twilioStatus(found[2],form);await queueCallCompletion(found[2],form.CallStatus);json(res,200,{ok:true});void flushCallNotifications().catch(e=>console.error('전화 알림 전송 오류:',e.message));return;}
       const response=await twilioTurn({id:found[2],form});res.writeHead(200,{'Content-Type':'application/xml; charset=utf-8','Cache-Control':'no-store'});res.end(response);return;
     }
     // Customer onboarding never requires a separate installed app.
@@ -185,7 +185,10 @@ async function handle(req,res) {
         const b=await body(req);return json(res,200,{decision:await processTurn(b.id,b.heard,b.config)});
       }
       if(req.method==='POST'&&url.pathname==='/api/cases/call'){
-        const b=await body(req);return json(res,200,await startCall(b.id,b.number,b.config));
+        const b=await body(req),owner=(await loadConfig()).owner;
+        if(!owner)throw Error('전화 결과 보고를 위해 소유자 WhatsApp 번호를 먼저 설정하세요.');
+        await trackCall(b.id,owner);
+        return json(res,200,await startCall(b.id,b.number,b.config));
       }
       if(req.method==='POST'&&url.pathname==='/api/android/dial'){
         const b=await body(req);return json(res,200,{result:await adbDial(b.number)});
@@ -233,6 +236,8 @@ export const server=http.createServer((req,res)=>{void handle(req,res);});
 server.listen(PORT,process.env.ORBIT_HOST==='0.0.0.0'?'0.0.0.0':'127.0.0.1',()=>{
   console.log(`\nOrbit 실행됨: http://127.0.0.1:${PORT}`);
   if(process.env.ORBIT_AUTO_RECOVER!=='0')void recoverInterruptedTasks().catch(e=>console.error('중단 작업 복구 실패:',e.message));
+  void flushCallNotifications().catch(e=>console.error('전화 알림 복구 실패:',e.message));
+  const callRetry=setInterval(()=>{void flushCallNotifications().catch(e=>console.error('전화 알림 재전송 실패:',e.message));},15000);callRetry.unref();
   console.log(`메신저 비서 운영실: http://127.0.0.1:${PORT}/`);
   if(['1','phone'].includes(process.env.ORBIT_OPEN_BROWSER)) {
     const target=`http://127.0.0.1:${PORT}`+(process.env.ORBIT_OPEN_BROWSER==='phone'?'/phone':'');
