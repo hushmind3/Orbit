@@ -19,10 +19,10 @@ test('separate user memories, no PC access, genuine tool result in response',asy
   await saveConfig({provider:'openai',base:`http://127.0.0.1:${mock.address().port}`,model:'fake-chat',owner:'821000000001'});
   const a='821011112222',b='821033334444';
   const inbox=await receiveMessage({channel:'test',sender:a,text:'내게 기억해 줘'});
-  const result=await processInboundTask(inbox.taskId);assert.equal(result.status,'completed');
+  const result=await processInboundTask(inbox.taskId);assert.equal(result.status,'reported');
   assert.match(JSON.stringify(await runMember('list_personal_notes',{},a)),/개별 사용자 기억/);
   assert.doesNotMatch(JSON.stringify(await runMember('list_personal_notes',{},b)),/개별 사용자 기억/);
-  assert.equal((await getTask(inbox.taskId)).status,'sent');
+  assert.equal((await getTask(inbox.taskId)).status,'reported');
   assert.ok((await getThread(inbox.threadId)).messages.some(m=>/메모 보관함/.test(m.text)));
   await assert.rejects(()=>runMember('android_tap',{x:2,y:3},a),/허용되지 않은/);
  }finally{await new Promise(r=>mock.close(r));await fs.rm(root,{recursive:true,force:true});}

@@ -8,7 +8,8 @@ import {store} from './store.js';
 import {newCase,listCases,findCase,processTurn,callInfo,startCall,validateWebhook,twilioTurn,twilioStatus,adbDevices,adbDial,duplicatePhotos} from './negotiation.js';
 import {getDashboard,getThread,receiveMessage,generateDraft,updateSettings,updateTask,sendReply,sendWhatsApp,verifyWhatsApp,whatsappChallenge,parseWhatsApp} from './inbox.js';
 import {createJoinSession,sessionStatus,consumeJoinMessage,completeDemo,getOnboardingStats,onboardingConfig,isRegisteredWhatsApp,startSms,checkSms} from './onboarding.js';
-import {isOwner,processOwnerTask,processInboundTask,handleApproval,operatorConfig,operatorPending} from './operator.js';
+import {isOwner,processOwnerTask,processInboundTask,handleApproval,operatorConfig,operatorPending,recoverInterruptedTasks,resumePausedTask} from './operator.js';
+import {getWork} from './work-ledger.js';
 import {saveConfig,loadConfig} from './config.js';
 import {bootstrapConnectors,connectorSummary,updateConnectors} from './connectors.js';
 import {notifyCallCompletion} from './call-notifier.js';
@@ -60,9 +61,10 @@ async function handle(req,res) {
         // Never accept task messages from unregistered accounts.
         const registration=await isRegisteredWhatsApp(msg.sender);
         if(!registration)continue;
-        if(/^(승인|거절)\s+[0-9a-f]{10}$/i.test(msg.text.trim())){
+        if(/^(승인|거절|답변)\s+[0-9a-f]{10}(?:\s+.*)?$/i.test(msg.text.trim())){
           void handleApproval(msg.sender,msg.text).then(cmd=>sendWhatsApp(msg.sender,cmd.reason||'승인 요청을 처리했습니다.')).catch(e=>console.error('승인 응답 실패:',e.message));continue;
         }
+        if(msg.text.trim()==='계속'){const d=await getDashboard();const match=d.tasks.find(t=>t.status==='paused'&&d.threads.some(th=>th.id===t.threadId&&th.sender===msg.sender));if(match){void resumePausedTask(match.id,msg.sender).catch(e=>console.error('작업 재개 오류:',e.message));continue;}}
         received.push(await receiveMessage(msg));
       }
       json(res,200,{ok:true});
@@ -127,6 +129,7 @@ async function handle(req,res) {
       if(req.method==='GET'&&url.pathname==='/api/admin/onboarding')return json(res,200,await getOnboardingStats());
       if(req.method==='POST'&&url.pathname==='/api/admin/diagnostics')return json(res,200,await checkConnections());
       if(req.method==='GET'&&url.pathname==='/api/admin/operator')return json(res,200,{model:await operatorConfig(),approvals:await operatorPending()});
+      if(req.method==='GET'&&url.pathname.startsWith('/api/admin/work/')){const id=url.pathname.split('/')[4];return json(res,200,await getWork(id));}
       if(req.method==='POST'&&url.pathname==='/api/admin/operator')return json(res,200,await saveConfig(await body(req)));
       if(req.method==='GET'&&url.pathname==='/api/admin/connectors')return json(res,200,connectorSummary());
       if(req.method==='POST'&&url.pathname==='/api/admin/connectors')return json(res,200,await updateConnectors(await body(req)));
@@ -230,6 +233,7 @@ async function handle(req,res) {
 export const server=http.createServer((req,res)=>{void handle(req,res);});
 server.listen(PORT,process.env.ORBIT_HOST==='0.0.0.0'?'0.0.0.0':'127.0.0.1',()=>{
   console.log(`\nOrbit 실행됨: http://127.0.0.1:${PORT}`);
+  if(process.env.ORBIT_AUTO_RECOVER!=='0')void recoverInterruptedTasks().catch(e=>console.error('중단 작업 복구 실패:',e.message));
   console.log(`메신저 비서 운영실: http://127.0.0.1:${PORT}/`);
   if(['1','phone'].includes(process.env.ORBIT_OPEN_BROWSER)) {
     const target=`http://127.0.0.1:${PORT}`+(process.env.ORBIT_OPEN_BROWSER==='phone'?'/phone':'');

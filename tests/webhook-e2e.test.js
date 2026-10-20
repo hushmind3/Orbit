@@ -52,6 +52,6 @@ test('HTTP QR -> signed Meta signup -> verified account -> real model auto respo
   assert.equal((await send('오늘 할 일 3개 알려줘','task-1')).status,200);
   await new Promise(r=>setTimeout(r,200));assert.equal(sent.length,before);
   const dash=await old(url+'/api/admin/state',{headers:{'X-Orbit-Agent':'1'}});assert.equal(dash.status,200);
-  const state=await dash.json();assert.equal(state.tasks.length,1);assert.equal(state.tasks[0].status,'sent');
+  const state=await dash.json();assert.equal(state.tasks.length,1);assert.equal(state.tasks[0].status,'answered');
  }finally{globalThis.fetch=old;await new Promise(r=>server.close(r));await new Promise(r=>model.close(r));await fs.rm(root,{recursive:true,force:true});}
 });

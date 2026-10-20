@@ -12,7 +12,6 @@ async function modify(fn){const job=writeChain.then(async()=>{const d=await read
 function log(d,event,description){d.events.unshift({id:randomUUID(),time:now(),event,description:String(description).slice(0,300)});d.events=d.events.slice(0,120);}
 const channelIds=['test','whatsapp','imessage'];
 const textLimit=(s,n)=>String(s??'').trim().slice(0,n);
-function workIntent(s){return /전화|해지|환불|예약|취소|구매|결제|주문|민원|서비스센터|사진|파일|앱|삭제|계약|통화|대신|신청|접수|변경|설치|보내|작성|찾아|검색/.test(s);}
 export async function receiveMessage({channel='test',sender='local-test',text,messageId=null}){
  if(!channelIds.includes(channel))throw new Error('지원하지 않는 채널');
  const message=textLimit(text,4000);if(!message)throw new Error('메시지가 비어 있습니다.');
@@ -25,14 +24,14 @@ export async function receiveMessage({channel='test',sender='local-test',text,me
   if(messageId){d.seenMessages.push(`${channel}:${who}:${messageId}`);d.seenMessages=d.seenMessages.slice(-5000);}
   const msg={id:randomUUID(),externalId:messageId||null,direction:'in',text:message,time:now(),status:'received'};
   t.messages.push(msg);t.messages=t.messages.slice(-120);t.updatedAt=now();
-  const task={id:randomUUID(),threadId:t.id,messageId:msg.id,title:textLimit(message,90),channel,kind:workIntent(message)?'action':'conversation',status:'received',createdAt:now(),updatedAt:now(),draft:''};
+  const task={id:randomUUID(),threadId:t.id,messageId:msg.id,title:textLimit(message,90),channel,kind:'request',status:'received',createdAt:now(),updatedAt:now(),draft:''};
   d.tasks.unshift(task);d.tasks=d.tasks.slice(0,250);
   log(d,'message',`${channel} · 새 요청 · ${task.title}`);
   return {threadId:t.id,taskId:task.id,duplicate:false};
  });
 }
 export async function addSystemMessage(threadId,text){return modify(d=>{const t=d.threads.find(x=>x.id===threadId);if(!t)throw Error('대화 없음');t.messages.push({id:randomUUID(),externalId:null,direction:'out',text:String(text).slice(0,1600),time:now(),status:'internal'});t.messages=t.messages.slice(-120);return {ok:true};});}
-export async function getDashboard(){const d=await read();const casesAvailable=true;return {counts:{threads:d.threads.length,open:d.tasks.filter(x=>!['sent','completed','dismissed'].includes(x.status)).length,ready:d.tasks.filter(x=>x.status==='draft_ready').length,failed:d.tasks.filter(x=>x.status==='failed').length},threads:d.threads.map(({messages,...t})=>({...t,lastMessage:messages.at(-1)||null,count:messages.length})),tasks:d.tasks,events:d.events.slice(0,45),settings:d.settings,channels:{whatsapp:{connected:Boolean(process.env.WA_ACCESS_TOKEN&&process.env.WA_PHONE_NUMBER_ID&&process.env.WA_APP_SECRET&&process.env.WA_VERIFY_TOKEN),webhook:'/webhook/whatsapp',note:'WhatsApp Business Cloud API 등록 및 공개 HTTPS 필요'},imessage:{connected:false,note:'Apple Messages for Business 또는 별도 Mac 브리지 미연결'},test:{connected:true,note:'관리자 내부 수신 시뮬레이터'}},phone:{configured:Boolean(process.env.TWILIO_ACCOUNT_SID&&process.env.TWILIO_AUTH_TOKEN&&process.env.TWILIO_FROM)},model:{configured:Boolean(process.env.ORBIT_LLM_BASE_URL&&process.env.ORBIT_LLM_MODEL),name:process.env.ORBIT_LLM_MODEL||''},casesAvailable};}
+export async function getDashboard(){const d=await read();const casesAvailable=true;return {counts:{threads:d.threads.length,open:d.tasks.filter(x=>!['sent','completed','answered','reported','partial','blocked','dismissed','failed'].includes(x.status)).length,ready:d.tasks.filter(x=>x.status==='draft_ready').length,failed:d.tasks.filter(x=>x.status==='failed').length},threads:d.threads.map(({messages,...t})=>({...t,lastMessage:messages.at(-1)||null,count:messages.length})),tasks:d.tasks,events:d.events.slice(0,45),settings:d.settings,channels:{whatsapp:{connected:Boolean(process.env.WA_ACCESS_TOKEN&&process.env.WA_PHONE_NUMBER_ID&&process.env.WA_APP_SECRET&&process.env.WA_VERIFY_TOKEN),webhook:'/webhook/whatsapp',note:'WhatsApp Business Cloud API 등록 및 공개 HTTPS 필요'},imessage:{connected:false,note:'Apple Messages for Business 또는 별도 Mac 브리지 미연결'},test:{connected:true,note:'관리자 내부 수신 시뮬레이터'}},phone:{configured:Boolean(process.env.TWILIO_ACCOUNT_SID&&process.env.TWILIO_AUTH_TOKEN&&process.env.TWILIO_FROM)},model:{configured:Boolean(process.env.ORBIT_LLM_BASE_URL&&process.env.ORBIT_LLM_MODEL),name:process.env.ORBIT_LLM_MODEL||''},casesAvailable};}
 export async function getThread(threadId){const d=await read();return d.threads.find(t=>t.id===threadId)||null;}
 export async function getTask(taskId){const d=await read();return d.tasks.find(t=>t.id===taskId)||null;}
 export async function updateSettings(patch){return modify(d=>{if(typeof patch.autoDraft==='boolean')d.settings.autoDraft=patch.autoDraft;if(typeof patch.autoSend==='boolean')d.settings.autoSend=patch.autoSend;log(d,'config','자동화 설정 변경');return d.settings;});}
@@ -64,7 +63,7 @@ export async function sendReply({threadId,text,taskId=null,approved=true}){
  const thread=await getThread(threadId);if(!thread)throw new Error('대화를 찾지 못했습니다.');
  if(thread.channel==='imessage')throw new Error('iMessage 발신 연결이 아직 없습니다.');
  let externalId=null;if(thread.channel==='whatsapp')externalId=await sendWhatsApp(thread.sender,content);
- return modify(d=>{const t=d.threads.find(x=>x.id===threadId);t.messages.push({id:randomUUID(),externalId,direction:'out',text:content,time:now(),status:thread.channel==='test'?'simulated':'sent'});t.messages=t.messages.slice(-120);t.updatedAt=now();const task=d.tasks.find(x=>x.id===taskId);if(task){task.status='sent';task.updatedAt=now();}log(d,'sent',`${thread.channel} · ${approved?'관리자 발신':'자동 답장'} · ${content.slice(0,65)}`);return {ok:true,externalId};});
+ return modify(d=>{const t=d.threads.find(x=>x.id===threadId);t.messages.push({id:randomUUID(),externalId,direction:'out',text:content,time:now(),status:thread.channel==='test'?'simulated':'sent'});t.messages=t.messages.slice(-120);t.updatedAt=now();const task=d.tasks.find(x=>x.id===taskId);if(task){task.deliveredAt=now();if(task.status==='draft_ready')task.status='sent';task.updatedAt=now();}log(d,'sent',`${thread.channel} · ${approved?'관리자 발신':'자동 답장'} · ${content.slice(0,65)}`);return {ok:true,externalId};});
 }
 export function verifyWhatsApp(body,header){const secret=process.env.WA_APP_SECRET;if(!secret||!header)return false;const expected='sha256='+createHmac('sha256',secret).update(body).digest('hex');const a=Buffer.from(expected);const b=Buffer.from(String(header));return a.length===b.length&&timingSafeEqual(a,b);}
 export function whatsappChallenge(search){const verify=process.env.WA_VERIFY_TOKEN;if(!verify||search.get('hub.mode')!=='subscribe'||search.get('hub.verify_token')!==verify)return null;return search.get('hub.challenge')||'';}

@@ -39,8 +39,8 @@ esac
   await saveConfig({provider:'openai',base:`http://127.0.0.1:${model.address().port}`,model:'mock-autonomy',owner:'821011119999'});
   const req=await receiveMessage({channel:'test',sender:'821011119999',text:'화면에서 다음을 누르고 필요한 메모를 계속 만들어 줘'});
   const result=await processOwnerTask(req.taskId);
-  assert.equal(result.status,'completed');
-  assert.equal((await getTask(req.taskId)).status,'sent');
+  assert.equal(result.status,'reported');
+  assert.equal((await getTask(req.taskId)).status,'reported');
   assert.equal((await operatorPending()).length,0);
   assert.equal(steps,11,'must continue past old 8-step boundary');
   assert.equal(observed,true,'the model must see the changed Android screen before next action');
