@@ -1,5 +1,74 @@
-# Orbit
+# Orbit — 말로 지시하는 개인 AI 비서 (Windows first)
 
-Windows-focused local AI assistant prototype. Node.js server, Vite + React + TypeScript UI, voice/text input and tool execution with user approvals.
+인스팅트와 동일한 서비스가 아닌, **실제 PC / 브라우저 작업을 실행하는 로컬 에이전트 MVP**입니다.
 
-Source code is being added to this repository.
+## 설치 및 실행
+
+1. Windows 11, Node.js 22 이상, Chrome 또는 Edge 설치.
+2. Ollama를 설치하고 도구 호출(tool calling)을 지원하는 모델 하나를 내려받습니다. 예: `ollama pull qwen3:4b` (선택 사항: 다른 Ollama 모델이나 OpenAI 호환 API).
+3. `start-windows.bat` 더블클릭. 첫 실행 시 `npm install`과 UI 빌드가 수행됩니다. **앱스토어 설치·수수료 없음.**
+4. 열리는 `http://127.0.0.1:4786`에서 모델을 선택하고 지시합니다. 음성은 Chrome/Edge의 음성 인식(Web Speech API)을 사용합니다. 마이크 권한이 필요하며 브라우저/OS 설정에 따라 음성 인식에 온라인 연결이 필요할 수 있습니다.
+
+macOS에서도 `start-mac.command`를 통해 대화·브라우저 도구를 사용할 수 있습니다. 로컬 애플리케이션 실행은 Windows 중심으로 구현되어 있습니다.
+
+## 실제 기능
+
+- 한국어 음성 명령 → 텍스트 변환 → LLM 실행 → 한국어 음성 답변(TTS)
+- 키보드 명령도 동일한 에이전트 경로를 사용
+- Windows 메모장/계산기/탐색기/그림판 실행
+- 웹 브라우저를 새 프로필로 구동하여 방문/텍스트 읽기/클릭/입력/키 누르기
+- 데스크톱/다운로드/문서 폴더 내 파일 탐색 및 텍스트 읽기/쓰기
+- 영구 메모 기록과 이전 대화 복원 (`.runtime/` 폴더, PC 안에만 저장)
+- 브라우저 클릭, 입력, 파일 쓰기는 **실행 전에 승인 버튼** 표시
+- 작업별 로그, Ollama 모델 목록 확인, OpenAI 호환 API 수동 연결
+
+## 예시 명령
+
+- `메모장 열어줘`
+- `구글에서 건축 뉴스 검색해줘`
+- `다운로드 폴더에서 최근 파일 10개 보여줘`
+- `네이버 홈페이지 열고 주요 기사 제목 읽어줘`
+- `이 내용을 기억해 둬: 다음 회의는 목요일` (메모 저장은 승인 후 수행)
+- `문서 폴더에 회의 메모.txt 만들어줘` (승인 후 저장)
+
+## 현재 범위
+
+- 실제 전화 발신, SMS, 자동 결제, 로그인 정보 자동 추출, 다른 앱의 비공개 데이터 읽기, OS 전체 화면 클릭은 **아직 구현하지 않았습니다**.
+- 웹 조작은 서비스의 로그인 및 차단 정책에 따라 제한됩니다. 은행/결제 같은 민감 작업은 자동화하지 않는 구조입니다.
+- 별도 클라우드 서버나 앱스토어 계정은 필요 없습니다. AI 모델은 로컬 Ollama를 권장하며, API 모드 선택 시 대화 내용이 선택한 제공업체에 전송됩니다.
+- Chrome/Edge의 음성 인식은 환경에 따라 동작이 달라질 수 있습니다. 음성이 안 되면 문자 입력 및 Windows의 Win+H 음성 타이핑을 사용할 수 있습니다.
+
+## 개발
+
+```bash
+npm install
+npm run server  # API :4786
+npm run dev     # 프론트 개발 :5173 (별도 터미널)
+npm test
+npm run build
+```
+
+## 연결 설정
+
+- 기본: Ollama `http://127.0.0.1:11434`, 예시 모델 `qwen3:4b`.
+- OpenAI-compatible: UI에서 공급자 `OpenAI 호환` 선택 후 API 기본 주소(ex: `https://example.com/v1`)·모델명·키 입력. 키는 브라우저의 `sessionStorage`에만 저장되며 브라우저를 닫으면 사라집니다.
+- 운영 서버는 `127.0.0.1`에만 바인딩하며, 외부 접속을 허용하지 않습니다.
+
+## 설계
+
+```text
+음성/문자 (Chrome/Edge)
+       │
+ React/Vite/TS UI ── 작업 로그·승인 인터페이스
+       │
+ Node.js HTTP server (127.0.0.1)
+       │
+ Ollama / OpenAI 호환 LLM (tool calling)
+       ├── Windows 앱·파일 도구
+       ├── Playwright + Edge/Chrome (독립 브라우저 프로필)
+       └── .runtime/ (대화·메모)
+```
+
+## 보안 설계
+
+로컬 서버는 오직 루프백 주소에 개방하고, API 요청에 전용 헤더와 동일 출처 확인을 요구합니다. LLM의 도구 인수는 별도 검사 후 처리합니다. 데이터 변경 동작은 사용자 승인이 필요합니다. 단, 이 MVP를 인터넷에 노출하거나 관리자 권한으로 실행하지 마세요.
