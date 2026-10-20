@@ -69,8 +69,8 @@ function App(){
     if(!response.body)throw new Error('스트리밍을 지원하지 않는 환경입니다.');
     const reader=response.body.getReader();const decoder=new TextDecoder();let buffer='';
     const onEvent=(event:Event)=>{
-      if(event.type==='status')setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'status',text:event.text||'',args:event.args}].slice(-25));
-      if(event.type==='tool_result')setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'tool_result',text:event.result||'',tool:event.tool}].slice(-25));
+      if(event.type==='status')setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'status',text:event.text||'',args:event.args} as Activity].slice(-25));
+      if(event.type==='tool_result')setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'tool_result',text:event.result||'',tool:event.tool} as Activity].slice(-25));
       if(event.type==='approval'&&event.id&&event.tool)setApproval({id:event.id,tool:event.tool,args:event.args||{}});
       if(event.type==='error')setActivities(prev=>[...prev,{id:crypto.randomUUID(),type:'error',text:event.text||'오류'}]);
       if(event.type==='answer') {
@@ -149,7 +149,7 @@ function App(){
         <div className="bubble"><div className="msglabel">{m.role==='assistant'?'ORBIT':'ME'}</div><p>{m.text}</p>{m.role==='assistant'&&<button className="hear" onClick={()=>readAloud(m.text)} title="답변 음성 재생"><Volume2 size={14}/> 읽어주기</button>}</div>
       </div>)}</div>}
       {(busy||activities.length>0)&&<div className="activity"><div className="activity-title"><span>실행 기록</span>{busy&&<LoaderCircle size={15} className="spin"/>}</div>
-        {activities.slice(-8).map(a=><div className={'activity-line '+a.type} key={a.id}><span className="eventglyph">{a.type==='error'?'!':a.type==='tool_result'?'✓':'↳'}</span><div>{a.tool&&<b>{toolNames[a.tool]||a.tool}</b>}<span>{short(a.text,550)}</span>{a.args&&<small>{short(toText(a.args),150)}</small>}</div></div>)}
+        {activities.slice(-8).map(a=><div className={'activity-line '+a.type} key={a.id}><span className="eventglyph">{a.type==='error'?'!':a.type==='tool_result'?'✓':'↳'}</span><div>{a.tool&&<b>{toolNames[a.tool]||a.tool}</b>}<span>{short(a.text,550)}</span>{a.args!=null&&<small>{short(toText(a.args),150)}</small>}</div></div>)}
         {approval&&<div className="approval"><div className="approval-head"><ShieldCheck size={21}/> 실행 승인 요청</div>
           <div className="approval-name">{toolNames[approval.tool]||approval.tool}</div><pre>{short(toText(approval.args),900)}</pre>
           <div className="approval-actions"><button className="reject" disabled={approval.answered} onClick={()=>void respondApproval(false)}><X size={17}/> 거절</button><button className="allow" disabled={approval.answered} onClick={()=>void respondApproval(true)}><Check size={17}/> 실행 승인</button></div>
