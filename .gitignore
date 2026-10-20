@@ -3,3 +3,8 @@ dist/
 .runtime/
 .env
 *.log
+
+.env
+.env.*
+!.env.example
+*.log

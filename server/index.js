@@ -7,11 +7,15 @@ import {approve,pendingCount,isBusy,runAgent} from './agent.js';
 import {store} from './store.js';
 import {newCase,listCases,findCase,processTurn,callInfo,startCall,validateWebhook,twilioTurn,twilioStatus,adbDevices,adbDial,duplicatePhotos} from './negotiation.js';
 import {getDashboard,getThread,receiveMessage,generateDraft,updateSettings,updateTask,sendReply,sendWhatsApp,verifyWhatsApp,whatsappChallenge,parseWhatsApp} from './inbox.js';
-import {createJoinSession,sessionStatus,consumeJoinMessage,completeDemo,getOnboardingStats,onboardingConfig,isRegisteredWhatsApp} from './onboarding.js';
+import {createJoinSession,sessionStatus,consumeJoinMessage,completeDemo,getOnboardingStats,onboardingConfig,isRegisteredWhatsApp,startSms,checkSms} from './onboarding.js';
+import {isOwner,processOwnerTask,handleApproval,operatorConfig,operatorPending} from './operator.js';
+import {saveConfig,loadConfig} from './config.js';
+import {bootstrapConnectors,connectorSummary,updateConnectors} from './connectors.js';
 
 const ROOT=path.resolve(fileURLToPath(new URL('..',import.meta.url)));
 const DIST=path.join(ROOT,'dist');
 const PORT=4786;
+await bootstrapConnectors();
 const joinAttempts=new Map();
 function joinAllowed(remote){const key=String(remote||'unknown');const now=Date.now();const recent=(joinAttempts.get(key)||[]).filter(t=>now-t<15*60*1000);if(recent.length>=5){joinAttempts.set(key,recent);return false;}recent.push(now);joinAttempts.set(key,recent);if(joinAttempts.size>1000)for(const [k,ts] of joinAttempts){if(ts.every(t=>now-t>15*60*1000))joinAttempts.delete(k);}return true;}
 const types={'.html':'text/html; charset=utf-8','.js':'application/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon','.png':'image/png'};
@@ -53,12 +57,19 @@ async function handle(req,res) {
         // Never accept task messages from unregistered accounts.
         const registration=await isRegisteredWhatsApp(msg.sender);
         if(!registration)continue;
+        if(/^(승인|거절)\s+[0-9a-f]{10}$/i.test(msg.text.trim())){
+          void handleApproval(msg.sender,msg.text).then(cmd=>sendWhatsApp(msg.sender,cmd.reason||'승인 요청을 처리했습니다.')).catch(e=>console.error('승인 응답 실패:',e.message));continue;
+        }
         received.push(await receiveMessage(msg));
       }
       json(res,200,{ok:true});
       // Respond immediately to Meta; any generation is tracked in the operator dashboard.
       const state=await getDashboard();
-      if(state.settings.autoDraft)for(const item of received)if(item.taskId&&!item.duplicate)void generateDraft(item.taskId);
+      if(state.settings.autoDraft)for(const item of received)if(item.taskId&&!item.duplicate){
+        const thread=await getThread(item.threadId);
+        if(await isOwner(thread?.sender))void processOwnerTask(item.taskId).catch(e=>console.error('소유자 작업 실패:',e.message));
+        else void generateDraft(item.taskId).catch(e=>console.error('메시지 초안 실패:',e.message));
+      }
       return;
     }
     if (url.pathname.startsWith('/twilio/')) {
@@ -82,7 +93,17 @@ async function handle(req,res) {
       const origin=req.headers.origin;
       if(origin && origin!==`http://${req.headers.host}` && origin!==`https://${req.headers.host}`)return json(res,403,{error:'invalid origin'});
       if(!joinAllowed(req.socket.remoteAddress))return json(res,429,{error:'연결 요청이 너무 많습니다. 15분 뒤 다시 시도해 주세요.'});
-      const item=await createJoinSession();return json(res,201,item);
+      const data=await body(req);const item=await createJoinSession({phone:data.phone});return json(res,201,item);
+    }
+    if(url.pathname==='/onboarding/sms/start'&&req.method==='POST'){
+      const origin=req.headers.origin;if(origin&&origin!==`http://${req.headers.host}`&&origin!==`https://${req.headers.host}`)return json(res,403,{error:'invalid origin'});
+      if(!joinAllowed(req.socket.remoteAddress))return json(res,429,{error:'잠시 뒤 다시 시도하세요.'});
+      const b=await body(req);return json(res,200,await startSms(b.id));
+    }
+    if(url.pathname==='/onboarding/sms/check'&&req.method==='POST'){
+      const origin=req.headers.origin;if(origin&&origin!==`http://${req.headers.host}`&&origin!==`https://${req.headers.host}`)return json(res,403,{error:'invalid origin'});
+      if(!joinAllowed(req.socket.remoteAddress))return json(res,429,{error:'인증 시도가 너무 많습니다.'});
+      const b=await body(req);return json(res,200,await checkSms(b.id,b.code));
     }
     if(req.method==='GET'&&url.pathname.startsWith('/onboarding/session/')){
       const id=url.pathname.slice('/onboarding/session/'.length);
@@ -102,6 +123,10 @@ async function handle(req,res) {
       if(!authorized(req)) return json(res,403,{error:'로컬 Orbit 화면에서만 접근 가능합니다.'});
       if(req.method==='GET'&&url.pathname==='/api/admin/state')return json(res,200,await getDashboard());
       if(req.method==='GET'&&url.pathname==='/api/admin/onboarding')return json(res,200,await getOnboardingStats());
+      if(req.method==='GET'&&url.pathname==='/api/admin/operator')return json(res,200,{model:await operatorConfig(),approvals:await operatorPending()});
+      if(req.method==='POST'&&url.pathname==='/api/admin/operator')return json(res,200,await saveConfig(await body(req)));
+      if(req.method==='GET'&&url.pathname==='/api/admin/connectors')return json(res,200,connectorSummary());
+      if(req.method==='POST'&&url.pathname==='/api/admin/connectors')return json(res,200,await updateConnectors(await body(req)));
       if(req.method==='POST'&&url.pathname==='/api/admin/onboarding/demo'){
         const b=await body(req);
         if(b.action==='create')return json(res,201,await createJoinSession({demo:true}));
@@ -110,6 +135,15 @@ async function handle(req,res) {
       }
       if(req.method==='GET'&&url.pathname.startsWith('/api/admin/threads/')){
         const thread=await getThread(url.pathname.split('/')[4]);return json(res,thread?200:404,thread||{error:'대화 없음'});
+      }
+      if(req.method==='POST'&&url.pathname==='/api/admin/operator/test'){
+        const b=await body(req);const config=await loadConfig();if(!config.owner)throw Error('먼저 소유자 번호를 설정하세요.');
+        const item=await receiveMessage({channel:'test',sender:String(config.owner).replace(/\D/g,''),text:b.text||''});
+        if(item.taskId)void processOwnerTask(item.taskId).catch(e=>console.error('운영실 실험 실패:',e.message));
+        return json(res,202,item);
+      }
+      if(req.method==='POST'&&url.pathname==='/api/admin/operator/approval'){
+        const b=await body(req);const config=await loadConfig();return json(res,200,await handleApproval(String(config.owner||'').replace(/\D/g,''),String(b.action||'승인')+' '+String(b.code||'')));
       }
       if(req.method==='POST'&&url.pathname==='/api/admin/simulate'){
         const b=await body(req);
