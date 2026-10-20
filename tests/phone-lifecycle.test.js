@@ -18,3 +18,20 @@ test('Twilio flow listens first, waits silently, negotiates, persists recorded t
   await twilioStatus(c.id,{CallStatus:'completed'});
  }finally{globalThis.fetch=old;await new Promise(r=>model.close(r));await fs.rm(tmp+'.sessions',{force:true});await fs.rm(tmp+'.cases',{force:true});}
 });
+
+test('early Twilio terminal callback is not overwritten by delayed outbound REST response',async()=>{
+ const original=globalThis.fetch;
+ globalThis.fetch=async(url,opts)=>{
+  if(String(url).includes('/Calls.json')){
+   const callback=new URLSearchParams(opts.body).get('StatusCallback');
+   const c=callback.match(/status\/([0-9a-f-]{36})/);assert.ok(c);
+   await twilioStatus(c[1],{CallStatus:'completed'});
+   return {ok:true,json:async()=>({sid:'CAfast',status:'queued'})};
+  }return original(url,opts);
+ };
+ try{
+  const c=await newCase({name:'선도착 확인',goal:'전화 문의',limits:'없음'});
+  await startCall(c.id,'+821011112222',{provider:'openai',base:'http://127.0.0.1:12345',model:'mock'});
+  assert.equal((await findCase(c.id)).status,'call-ended-unverified');
+ }finally{globalThis.fetch=original;await fs.rm(tmp+'.sessions',{force:true});await fs.rm(tmp+'.cases',{force:true});}
+});

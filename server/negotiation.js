@@ -78,8 +78,10 @@ export async function startCall(id,number,config){
  const key=randomUUID().replace(/-/g,'');sessions.set(id,{key,config,created:Date.now(),started:false,emptyRounds:0,lastInput:'',lastInputAt:0});await persistSessions();
  const body=new URLSearchParams({To:number,From:s.from,Url:`${s.publicUrl}/twilio/voice/${id}?token=${key}`,Method:'POST',StatusCallback:`${s.publicUrl}/twilio/status/${id}?token=${key}`,StatusCallbackMethod:'POST'});
  const response=await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(s.sid)}/Calls.json`,{method:'POST',headers:{Authorization:'Basic '+Buffer.from(s.sid+':'+s.token).toString('base64'),'Content-Type':'application/x-www-form-urlencoded'},body,signal:AbortSignal.timeout(12000)});
- const json=await response.json().catch(()=>({}));if(!response.ok){sessions.delete(id);await persistSessions();throw Error('통신사 발신 실패: '+(json.message||response.status));}
- await setCaseStatus(id,'calling');return {sid:json.sid,status:json.status};
+ const json=await response.json().catch(()=>({}));if(!response.ok){if(!sessions.get(id)?.terminalStatus)sessions.delete(id);await persistSessions();throw Error('통신사 발신 실패: '+(json.message||response.status));}
+ // Terminal status may arrive before outbound REST resolves. Never revert it to calling.
+ await transact(rows=>{const item=rows.find(x=>x.id===id);if(item?.status==='draft')item.status='calling';return item?.status;});
+ return {sid:json.sid,status:json.status};
 }
 function sayGather(id,token,prompt='',digits=''){
  const link=`${settings().publicUrl}/twilio/voice/${id}?token=${token}`;
