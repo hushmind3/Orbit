@@ -6,6 +6,6 @@ if errorlevel 1 (
  pause
  exit /b 1
 )
-start "" "http://127.0.0.1:4786/phone"
+set ORBIT_OPEN_BROWSER=phone
 node server/index.js
 pause
