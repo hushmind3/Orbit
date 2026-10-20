@@ -1,10 +1,12 @@
 {
   "name": "voice-agent-windows",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Local-first voice & text agent for Windows: Ollama/OpenAI-compatible LLM + real PC and browser tools",
-  "engines": {"node": ">=22"},
+  "description": "Orbit local AI assistant with voice/text, negotiation call lab, Android dialer bridge and duplicate photo report",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "server": "node server/index.js",
