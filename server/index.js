@@ -105,8 +105,8 @@ const server=http.createServer((req,res)=>{void handle(req,res);});
 server.listen(PORT,process.env.ORBIT_HOST==='0.0.0.0'?'0.0.0.0':'127.0.0.1',()=>{
   console.log(`\nOrbit 실행됨: http://127.0.0.1:${PORT}`);
   console.log(`문자·음성 명령, Windows 도구, Edge/Chrome 웹 조작 지원`);
-  if(process.env.ORBIT_OPEN_BROWSER==='1') {
-    const target=`http://127.0.0.1:${PORT}`;
+  if(['1','phone'].includes(process.env.ORBIT_OPEN_BROWSER)) {
+    const target=`http://127.0.0.1:${PORT}`+(process.env.ORBIT_OPEN_BROWSER==='phone'?'/phone':'');
     try {
       if(process.platform==='win32') {const p=spawn('explorer.exe',[target],{detached:true,stdio:'ignore'});p.unref();}
       else if(process.platform==='darwin') {const p=spawn('open',[target],{detached:true,stdio:'ignore'});p.unref();}
