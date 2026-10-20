@@ -21,8 +21,10 @@ async function body(req){return JSON.parse(await rawBody(req));}
 function authorized(req) {
   const origin=req.headers.origin;
   const fromLocal=/^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(String(req.socket.remoteAddress));
+  const localHost=/^(?:127\.0\.0\.1|localhost):4786$/.test(String(req.headers.host||''));
+  const notProxied=!req.headers['x-forwarded-for']&&!req.headers['forwarded'];
   const localOrigin=!origin||/^http:\/\/(?:127\.0\.0\.1|localhost):(?:4786|5173)$/.test(origin);
-  if(fromLocal&&localOrigin&&req.headers['x-orbit-agent']==='1')return true;
+  if(fromLocal&&localHost&&notProxied&&localOrigin&&req.headers['x-orbit-agent']==='1')return true;
   const pair=process.env.ORBIT_PAIRING_TOKEN;
   const matchingOrigin=!origin||origin===`http://${req.headers.host}`||origin===`https://${req.headers.host}`;
   if(pair&&pair.length>=12&&matchingOrigin&&req.headers['x-orbit-pairing']===pair&&req.headers['x-orbit-agent']==='1')return true;

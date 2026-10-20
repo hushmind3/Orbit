@@ -1,3 +1,22 @@
+# Orbit 0.3 — 메신저 기반 범용 개인 AI 비서
+
+**사용자는 별도 앱 없이 WhatsApp에서 Orbit과 대화합니다. 관리자만 운영실을 사용합니다.**
+
+- **고객용 QR 가입:** `http://127.0.0.1:4786/join` — 일회용 QR → WhatsApp 대화창 → 코드 메시지 전송 → Meta 서명 웹훅 확인 후 회원 등록.
+- **관리자 운영실:** `http://127.0.0.1:4786/` — 가입자, 수신 업무, AI 초안, 연결 상태, 오류 기록.
+- **기존 전화 기능:** `http://127.0.0.1:4786/phone` — 별도 전화 실험 도구로 유지.
+- **설치:** Node.js 22+, `npm install` 후 Windows `start-windows.bat`, Mac `start-mac.command` 실행.
+
+### WhatsApp QR 실가입을 위한 설정
+
+Meta WhatsApp Business Cloud API, 실제 비즈니스 번호, 외부 HTTPS 웹훅이 있어야 합니다. `WA_BUSINESS_NUMBER`, `WA_PHONE_NUMBER_ID`, `WA_ACCESS_TOKEN`, `WA_APP_SECRET`, `WA_VERIFY_TOKEN` 환경변수를 설정하고 Meta 웹훅 URL을 `https://<공개주소>/webhook/whatsapp`으로 지정합니다. `messages` 이벤트 구독도 필요합니다. QR 생성은 `qrcode` 패키지를 사용합니다.
+
+WhatsApp 연결 전에는 고객용 QR 가입이 활성화되지 않으며, 로컬 시연 버튼으로 **가입 화면과 상태 변화만** 시험할 수 있습니다. 실제 가입은 WhatsApp에서 사용자 본인이 코드를 전송하고 서명된 웹훅이 도착해야 완료됩니다. 인스팅트의 별도 SMS 인증 절차는 아직 포함하지 않았습니다.
+
+관리자 API를 인터넷에 공개하지 마세요. 원격 공개 서버에서는 리버스 프록시를 통해 고객 가입·WhatsApp 웹훅 경로만 노출하고 운영실은 별도로 보호해야 합니다.
+
+---
+
 # Orbit — 말로 지시하는 개인 AI 비서 (Windows first)
 
 인스팅트와 동일한 서비스가 아닌, **실제 PC / 브라우저 작업을 실행하는 로컬 에이전트 MVP**입니다.
