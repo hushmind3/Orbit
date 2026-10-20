@@ -95,11 +95,6 @@ async function handle(req,res) {
       if(found[1]==='status'){await twilioStatus(found[2],form);await queueCallCompletion(found[2],form.CallStatus);json(res,200,{ok:true});void flushCallNotifications().catch(e=>console.error('전화 알림 전송 오류:',e.message));return;}
       const response=await twilioTurn({id:found[2],form});res.writeHead(200,{'Content-Type':'application/xml; charset=utf-8','Cache-Control':'no-store'});res.end(response);return;
     }
-    // Customer onboarding never requires a separate installed app.
-    if(req.method==='GET'&&(url.pathname==='/join'||url.pathname==='/join.html')){
-      const data=await fs.readFile(path.join(ROOT,'public','join.html'));
-      res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(data);return;
-    }
     if(url.pathname==='/onboarding/config'&&req.method==='GET')return json(res,200,onboardingConfig());
     if(url.pathname==='/onboarding/session'&&req.method==='POST'){
       const origin=req.headers.origin;

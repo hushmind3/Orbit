@@ -23,7 +23,7 @@ const model=createServer(async(req,res)=>{let s='';for await(const ch of req)s+=
 function incoming(sender,text,id){return JSON.stringify({object:'whatsapp_business_account',entry:[{changes:[{field:'messages',value:{messages:[{type:'text',from:sender,id,text:{body:text}}]}}]}]});}
 function signature(body){return 'sha256='+createHmac('sha256',process.env.WA_APP_SECRET).update(body).digest('hex');}
 async function until(fn,ms=4500){const end=Date.now()+ms;while(Date.now()<end){if(await fn())return;await new Promise(r=>setTimeout(r,45));}throw Error('Webhook chat reply not delivered in time');}
-test('HTTP QR -> signed Meta signup -> verified account -> real model auto response -> duplicate rejected',async()=>{
+test('signed Meta self-service signup without any admin approval -> autonomous reply and deduplication',async()=>{
  await fs.mkdir(root,{recursive:true});await new Promise(r=>model.listen(0,'127.0.0.1',r));
  await saveConfig({provider:'openai',base:`http://127.0.0.1:${model.address().port}`,model:'fake-e2e',owner:'821099999999'});
  const old=globalThis.fetch,sent=[];
@@ -34,7 +34,6 @@ test('HTTP QR -> signed Meta signup -> verified account -> real model auto respo
  const {server}=await import('../server/index.js');
  try{
   const url=`http://127.0.0.1:${process.env.ORBIT_PORT}`;
-  const qrPage=await old(url+'/join');assert.equal(qrPage.status,200);assert.match(await qrPage.text(),/QR/);
   const config=await (await old(url+'/onboarding/config')).json();assert.equal(config.ready,true);
   const created=await old(url+'/onboarding/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'실제 흐름 테스트'})});assert.equal(created.status,201);
   const session=await created.json();assert.equal(session.status,'awaiting_whatsapp');assert.match(session.link,/wa\.me/);
