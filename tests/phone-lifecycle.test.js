@@ -1,7 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import path from 'node:path';import os from 'node:os';import {createServer} from 'node:http';
 import {newCase,startCall,twilioTurn,findCase,twilioStatus} from '../server/negotiation.js';
 const tmp=path.join(os.tmpdir(),'orbit-phone-check-'+process.pid);
-process.env.ORBIT_CALL_SESSIONS_PATH=tmp+'.sessions';
+process.env.ORBIT_CALL_SESSIONS_PATH=tmp+'.sessions';process.env.ORBIT_CASES_PATH=tmp+'.cases';
 process.env.TWILIO_ACCOUNT_SID='AC'+'x'.repeat(32);process.env.TWILIO_AUTH_TOKEN='test';process.env.TWILIO_FROM='+15551230000';process.env.ORBIT_PUBLIC_URL='https://orbit.example.test';
 let model=createServer(async(req,res)=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({say:'해지 위약금 계산 근거를 알려주시겠습니까?',reason:'근거 확인',flag:'normal',digits:''})}}]}));});
 test('Twilio flow listens first, waits silently, negotiates, persists recorded turns',async()=>{
@@ -16,5 +16,5 @@ test('Twilio flow listens first, waits silently, negotiates, persists recorded t
   const negotiate=await twilioTurn({id:c.id,form:{SpeechResult:'위약금은 18만 원이며 6개월 유지 시 할인 가능합니다.'}});assert.match(negotiate,/위약금 계산 근거/);
   const info=await findCase(c.id);assert.ok(info.turns.some(x=>x.flag==='hold'));assert.ok(info.turns.some(x=>/18만 원/.test(x.content)));
   await twilioStatus(c.id,{CallStatus:'completed'});
- }finally{globalThis.fetch=old;await new Promise(r=>model.close(r));await fs.rm(tmp+'.sessions',{force:true});}
+ }finally{globalThis.fetch=old;await new Promise(r=>model.close(r));await fs.rm(tmp+'.sessions',{force:true});await fs.rm(tmp+'.cases',{force:true});}
 });

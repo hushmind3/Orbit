@@ -54,14 +54,14 @@ test('real chat -> Ollama tool call -> autonomous note -> final answer', {timeou
           const approve=await fetch(url+'/api/approval',{method:'POST',headers,body:JSON.stringify({id:msg.id,allow:true})});
           assert.deepEqual(await approve.json(),{ok:true});
         }
-        if(msg.type==='answer'){gotAnswer=true;assert.equal(msg.text,'메모를 저장했습니다.');}
+        if(msg.type==='answer'){gotAnswer=true;assert.match(msg.text,/메모를 저장했습니다/);assert.match(msg.text,/Orbit 업무 보고/);}
       }
     }
     assert.equal(gotApproval,false,'routine note-taking should require no approval');assert.ok(gotAnswer);assert.equal(callCount,2);
     assert.ok(results.some(x=>x.type==='tool_result'&&x.tool==='remember'));
     const history=await (await fetch(url+'/api/history',{headers})).json();
     assert.ok(history.notes.some(x=>x.note==='시범 기능 점검'));
-    assert.ok(history.items.some(x=>x.content==='메모를 저장했습니다.'));
+    assert.ok(history.items.some(x=>x.content.includes('메모를 저장했습니다.')));
     const noHeader=await fetch(url+'/api/history');assert.equal(noHeader.status,403);
   }finally{
     processServer.kill();await new Promise(resolve=>mock.close(resolve));

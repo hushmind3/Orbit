@@ -1,4 +1,9 @@
 import test from 'node:test';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs/promises';
+const casesFile=path.join(os.tmpdir(),`orbit-negotiation-${process.pid}.json`);
+process.env.ORBIT_CASES_PATH=casesFile;
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {newCase,findCase,listCases,processTurn,callInfo,adbDevices,duplicatePhotos,validateWebhook} from '../server/negotiation.js';
@@ -22,3 +27,5 @@ test('agent negotiates according to context with actual model API request',async
 });
 test('phone connection is not falsely reported without credentials',()=>{assert.equal(typeof callInfo().configured,'boolean');assert.equal(validateWebhook({id:'notfound',url:'',token:'',form:{},signature:''}),false);});
 test('Android and photo tools are readable without hardware',async()=>{assert.equal(typeof (await adbDevices()),'string');const r=await duplicatePhotos();assert.ok(Array.isArray(r.groups));});
+
+test.after(async()=>{await fs.rm(casesFile,{force:true});});

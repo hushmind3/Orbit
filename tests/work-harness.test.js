@@ -19,7 +19,9 @@ let mode='finish',calls=0;
 const tool=(name,args,id)=>({role:'assistant',content:null,tool_calls:[{id:'id_'+id,function:{name,arguments:JSON.stringify(args)}}]});
 const model=createServer(async(req,res)=>{
  let raw='';for await(const chunk of req)raw+=chunk;
- const data=JSON.parse(raw);calls++;
+ const data=JSON.parse(raw);
+ if(data.messages?.[0]?.content?.includes('# ORBIT_GOAL_AUDIT')){res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({choices:[{message:{role:'assistant',content:JSON.stringify({verified:!['false-success','false-positive'].includes(mode),reason:mode==='false-success'?'실패한 작업만 있음':'관찰한 메모 저장 결과가 사용자 요청을 충족함'})}}]}));return;}
+ calls++;
  let msg;
  if(mode==='finish'){
   msg=calls===1?tool('remember',{note:'비서가 자율적으로 기록한 메모'},calls):tool('finish_task',{status:'completed',summary:'메모 저장을 확인했습니다. 나머지 작업은 없습니다.'},calls);
@@ -29,6 +31,10 @@ const model=createServer(async(req,res)=>{
   msg=!answered?tool('request_user_input',{question:'파일에 어떤 제목을 붙일까요?'},calls):!remembered?tool('remember',{note:'제목은 사용자가 알려준 값'},calls):tool('finish_task',{status:'completed',summary:'사용자가 알려준 제목을 기록했습니다.'},calls);
  }else if(mode==='false-success'){
   msg=calls===1?tool('read_text_file',{file:'~/Documents/definitely-not-real-'+process.pid+'.txt'},calls):tool('finish_task',{status:'completed',summary:'모든 파일을 정상적으로 읽었습니다.'},calls);
+ }else if(mode==='false-positive'){
+  msg=calls===1?tool('remember',{note:'지시를 접수했다는 메모만 보관'},calls):tool('finish_task',{status:'completed',summary:'해지를 완료했습니다.'},calls);
+ }else if(mode==='progress-fast'){
+  msg=calls<=2?tool('report_progress',{message:'사용자에게 알려야 할 서로 다른 진행사항 '+calls},calls):tool('finish_task',{status:'partial',summary:'아직 처리 중입니다.'},calls);
  }else if(mode==='progress'){
   msg=calls===1?tool('report_progress',{message:'중요한 진행 사항을 확인했습니다.'},calls):calls===2?tool('remember',{note:'중간 보고 후 실행'},calls):tool('finish_task',{status:'completed',summary:'업무 종료했습니다.'},calls);
  }else if(mode==='pause'){
@@ -36,7 +42,7 @@ const model=createServer(async(req,res)=>{
  }
  res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({choices:[{message:msg}]}));
 });
-async function setup(name){await fs.mkdir(root,{recursive:true});mode=name;calls=0;owner=({finish:'821011110001',question:'821011110002','false-success':'821011110003',progress:'821011110004',pause:'821011110005'})[name];await saveConfig({provider:'openai',base:`http://127.0.0.1:${model.address().port}`,model:'mock-harness',owner,approvalMode:'autonomous'});return receiveMessage({channel:'test',sender:owner,text:'지시를 알아서 처리하고 결과를 알려줘 '+name});}
+async function setup(name){await fs.mkdir(root,{recursive:true});mode=name;calls=0;owner=({finish:'821011110001',question:'821011110002','false-success':'821011110003',progress:'821011110004',pause:'821011110005','false-positive':'821011110006','progress-fast':'821011110007'})[name];await saveConfig({provider:'openai',base:`http://127.0.0.1:${model.address().port}`,model:'mock-harness',owner,approvalMode:'autonomous'});return receiveMessage({channel:'test',sender:owner,text:name==='false-positive'?'구독을 위약금 없이 실제 해지하고 결과를 알려줘':'지시를 알아서 처리하고 결과를 알려줘 '+name});}
 await new Promise(resolve=>model.listen(0,'127.0.0.1',resolve));
 test('finish_task reports evidence from executed work, not merely a chat send',async()=>{
  const task=await setup('finish');const result=await processOwnerTask(task.taskId);
@@ -50,6 +56,9 @@ test('model autonomously asks one freeform question then resumes same saved job'
  const task=await setup('question');const result=await processOwnerTask(task.taskId);
  assert.equal(result.status,'awaiting_input');assert.equal((await getTask(task.taskId)).status,'awaiting_input');
  const pending=await operatorPending();assert.equal(pending.length,1);assert.equal(pending[0].tool,'request_user_input');
+ const invalid=await handleApproval(owner,'답변 '+pending[0].code);assert.equal(invalid.ok,false);
+ const invalid2=await handleApproval(owner,'승인 '+pending[0].code);assert.equal(invalid2.ok,false);
+ assert.equal((await operatorPending()).length,1,'잘못된 응답은 대기 중인 질문을 없애면 안 됩니다.');
  const answer=await handleApproval(owner,'답변 '+pending[0].code+' 2026년 보고서');
  assert.equal(answer.ok,true);assert.equal((await getTask(task.taskId)).status,'completed');
  assert.equal((await getWork(task.taskId)).delivered,true);
@@ -59,6 +68,17 @@ test('model cannot turn only failed tool executions into verified completion',as
  const task=await setup('false-success');const result=await processOwnerTask(task.taskId);
  assert.equal(result.status,'partial');
  const report=(await getWork(task.taskId)).report;assert.match(report,/오류 1건/);assert.match(report,/완료라고 단정할/);
+});
+test('one unrelated success cannot confirm the user goal',async()=>{
+ const task=await setup('false-positive');const result=await processOwnerTask(task.taskId);
+ assert.equal(result.status,'partial');assert.match((await getWork(task.taskId)).report,/완료라고 단정/);
+ assert.equal(workFacts(await getWork(task.taskId)).ok,1);
+});
+test('two consecutive progress requests both produce real notices',async()=>{
+ const task=await setup('progress-fast');const result=await processOwnerTask(task.taskId);
+ assert.equal(result.status,'partial');const thread=await getThread(task.threadId);
+ assert.equal(thread.messages.filter(m=>m.direction==='out'&&m.text.includes('진행 보고')).length,2);
+ assert.equal((await getWork(task.taskId)).events.filter(x=>x.type==='progress').length,2);
 });
 test('progress reporting is optional and does not finish a task',async()=>{
  const task=await setup('progress');const before=(await getThread(task.threadId)).messages.length;const result=await processOwnerTask(task.taskId);

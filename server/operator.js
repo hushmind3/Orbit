@@ -7,9 +7,9 @@ import path from 'node:path';
 import {definitions,runTool} from './tools.js';
 import {needsTaskApproval} from './approval-policy.js';
 import {store} from './store.js';
-import {getDashboard,getTask,getThread,sendReply,setTaskStatus} from './inbox.js';
+import {getDashboard,getTask,getThread,receiveMessage,sendReply,setTaskStatus} from './inbox.js';
 import {newCase,startCall,callReady} from './negotiation.js';
-import {loadConfig,publicConfig} from './config.js';
+import {loadConfig,publicConfig,saveConfig} from './config.js';
 import {trackCall} from './call-notifier.js';
 import {mobileDefinitions,runMobile,inspectMobileVision} from './mobile.js';
 import {memberDefinitions,runMember} from './member-tools.js';
@@ -89,13 +89,47 @@ async function compact(messages,steps,taskId){if(messages.length<85)return messa
 }
 
 async function checkpoint(taskId,messages,step,recipient,owner,pendingCall=null,provider=null){await saveCheckpoint(taskId,{state:'running',messages,step,recipient,owner,pendingCall,provider,at:new Date().toISOString()});}
-async function publish(taskId,recipient,summary,status){const work=await getWork(taskId);const rendered=formatWorkReport(work,{summary,status});await storeWorkReport(taskId,rendered.text,rendered.status);await setTaskStatus(taskId,rendered.status);
+
+/** The acting model's success assertion is not proof. Review the user's original goal
+ * against the observed outcomes, using a separate model turn WITHOUT agent tools.
+ * An inconclusive or unavailable review cannot mark a task completed. */
+async function reviewOutcome(taskId,summary){
+ const work=await getWork(taskId),facts=workFacts(work),task=await getTask(taskId);
+ if(!facts.ok||facts.pending.length)return {verified:false,reason:'성공한 작업 증거가 없거나 실행 결과가 확인되지 않았습니다.'};
+ const thread=await getThread(task.threadId);
+ const requested=thread?.messages.find(m=>m.id===task.messageId)?.text||task.title;
+ const observations=facts.done.slice(-65).map((e,i)=>({step:i+1,tool:e.name,success:e.ok===true,result:String(e.detail||'').slice(0,300)}));
+ const prompt=[
+  {role:'system',content:`# ORBIT_GOAL_AUDIT
+당신은 작업을 수행했던 비서와 별개로 최종 결과를 점검합니다.
+사용자의 원래 목표를 실제로 달성했다는 관찰 근거가 있는지만 평가합니다.
+도구가 성공했다는 사실과 최종 목표 달성은 다릅니다. 검색 성공은 환불, 해지, 예약, 구매의 완료 증거가 아닙니다. 전화 발신 접수는 통화나 협상의 성공이 아닙니다.
+사용자가 요청한 업무의 핵심 조건을 충족했는지, 도구 결과가 이를 뒷받침하는지 비교하십시오. 다른 작업의 결과 또는 비서의 주장만으로 성공을 인정하지 마십시오.
+실패 후 복구해 실제 목표에 도달한 경우는 성공으로 인정할 수 있습니다. 확인되지 않으면 false입니다.
+반드시 JSON 객체만 반환: {"verified":boolean,"reason":"최대 200자 근거"}.`},
+  {role:'user',content:JSON.stringify({userGoal:requested,agentClaim:summary,observedToolOutcomes:observations,unresolvedOperations:facts.pending.map(e=>e.name)},null,2)}
+ ];
+ try{
+  const {message}=await invoke(prompt,[]);
+  const raw=String(message.content||'').trim().replace(/^```(?:json)?\s*/,'').replace(/```$/,'');
+  const match=raw.match(/\{[\s\S]*\}/);const parsed=JSON.parse(match?match[0]:raw);
+  if(typeof parsed.verified!=='boolean')throw Error('검증 결과 형식 오류');
+  return {verified:parsed.verified,reason:String(parsed.reason||'').slice(0,220)};
+ }catch(e){return {verified:false,reason:'결과 검증에 실패했습니다: '+String(e.message||e).slice(0,180)};}
+}
+async function publish(taskId,recipient,summary,status){
+ const work=await getWork(taskId);
+ const review=status==='completed'?await reviewOutcome(taskId,summary):null;
+ if(review)await workEvent(taskId,'goal-review',{verified:review.verified,detail:review.reason});
+ const rendered=formatWorkReport(work,{summary,status,completionReview:review});
+ await storeWorkReport(taskId,rendered.text,rendered.status);await setTaskStatus(taskId,rendered.status);
  try{await notify(recipient,taskId,rendered.text);await reportDelivered(taskId);return {status:rendered.status,report:rendered.text};}
  catch(e){await setTaskStatus(taskId,'report_pending',e.message);return {status:'report_pending',report:rendered.text,error:e.message};}
 }
 export async function retryWorkReport(taskId){const work=await getWork(taskId),task=await getTask(taskId);if(!work.report||work.delivered||!task)return false;const thread=await getThread(task.threadId);await notify(thread.sender,taskId,work.report);await reportDelivered(taskId);await setTaskStatus(taskId,work.state);return true;}
-async function loop(taskId,recipient,messages,owner,startStep=0){const task=await getTask(taskId);const allowedTools=owner?ownerTools:customerTools, allowedNames=new Set(allowedTools.map(x=>x.name));let lastProgress=-100;
+async function loop(taskId,recipient,messages,owner,startStep=0,onEvent=()=>{}){const task=await getTask(taskId);const allowedTools=owner?ownerTools:customerTools, allowedNames=new Set(allowedTools.map(x=>x.name));
  for(let step=startStep;step<budget();step++){
+  onEvent({type:'status',text:`AI 판단 중 · ${step+1}단계`});
   const {message,provider}=await invoke(messages,allowedTools);
   if((message.tool_calls||[]).length>1){messages.push({role:'user',content:'한 번에 하나의 도구만 호출하세요. 다음 행동을 선택하세요.'});continue;}
   const call=parsedTool(message);
@@ -111,8 +145,16 @@ async function loop(taskId,recipient,messages,owner,startStep=0){const task=awai
   messages.push(recordAssistant(call,provider));
   if(call.name==='review_work_history'){const work=await getWork(taskId),count=Math.max(1,Math.min(40,Number(call.args.last)||20));toolResult(messages,call,provider,JSON.stringify(work.events.slice(-count)).slice(0,7800));await checkpoint(taskId,messages,step+1,recipient,owner);continue;}
   if(call.name==='report_progress'){
-   if(step-lastProgress>=4){try{await notify(recipient,taskId,'📍 Orbit 진행 보고\n'+String(call.args.message||'진행 중입니다.').slice(0,1200));await workEvent(taskId,'progress',{detail:String(call.args.message||'').slice(0,400)});}catch(e){await workEvent(taskId,'progress-delivery-error',{detail:String(e.message).slice(0,200)});}lastProgress=step;}
-   toolResult(messages,call,provider,'진행 상황을 보고했습니다. 업무를 계속 진행하세요.');
+   const detail=String(call.args.message||'진행 중입니다.').slice(0,1200);
+   try{
+    await notify(recipient,taskId,'📍 Orbit 진행 보고\n'+detail);
+    await workEvent(taskId,'progress',{detail:detail.slice(0,400)});
+    toolResult(messages,call,provider,'WhatsApp 진행 보고가 정상 전송되었습니다. 업무를 계속 진행하세요.');
+   }catch(e){
+    await workEvent(taskId,'progress-delivery-error',{detail:String(e.message||e).slice(0,200)});
+    toolResult(messages,call,provider,'진행 보고 전송 실패: '+String(e.message||e).slice(0,240)+'; 사용자에게 전달됐다고 가정하지 마세요. 필요하면 다시 시도하세요.');
+   }
+   onEvent({type:'status',text:'진행 보고 전송 처리됨'});
    await checkpoint(taskId,messages,step+1,recipient,owner);continue;
   }
   const config=await loadConfig();
@@ -135,18 +177,19 @@ async function loop(taskId,recipient,messages,owner,startStep=0){const task=awai
   try{result=String(await execute(call,recipient,owner)).slice(0,11000);}catch(e){ok=false;result='도구 실행 실패: '+String(e.message||e).slice(0,1000);}
   await workEvent(taskId,'tool-result',{operationId,name:call.name,ok,detail:result.slice(0,300)});
   toolResult(messages,call,provider,result);
+  onEvent({type:'tool_result',tool:call.name,result:result.slice(0,800)});
   messages=await compact(messages,step+1,taskId);
   await checkpoint(taskId,messages,step+1,recipient,owner);
  }
  await checkpoint(taskId,await compact(messages,budget(),taskId),0,recipient,owner);
  return publish(taskId,recipient,`이번 실행의 ${budget()}단계 처리 예산에 도달했습니다. 업무는 완료로 판단하지 않았습니다. '계속'이라고 말씀하시면 저장된 상태에서 이어가겠습니다.`,'paused');
 }
-export async function processInboundTask(taskId){const task=await getTask(taskId);if(!task)return {status:'missing'};const t=await getThread(task.threadId);if(!t)return {status:'missing-thread'};const owner=await isOwner(t.sender);
+export async function processInboundTask(taskId,{trustedLocal=false,onEvent=()=>{}}={}){const task=await getTask(taskId);if(!task)return {status:'missing'};const t=await getThread(task.threadId);if(!t)return {status:'missing-thread'};const owner=trustedLocal||await isOwner(t.sender);
  if(t.channel==='whatsapp'&&!await isRegisteredWhatsApp(t.sender))throw Error('가입된 WhatsApp 계정이 아닙니다.');
  return queue(t.sender,async()=>{
   try{
    const current=await getTask(taskId);if(['sent','completed','blocked','partial','reported','answered','paused','awaiting_input','report_pending'].includes(current?.status))return {status:'duplicate'};
-   const work=await getWork(taskId);if(current?.status==='running'&&!work.checkpoint)return {status:'interrupted_without_checkpoint'};
+   const work=await getWork(taskId);
    await setTaskStatus(taskId,'running');
    let messages,step=0;
    if(work.checkpoint){messages=work.checkpoint.messages;step=work.checkpoint.step;
@@ -156,41 +199,88 @@ export async function processInboundTask(taskId){const task=await getTask(taskId
      await checkpoint(taskId,messages,step,t.sender,owner);
     }
    }else{
+    const unresolved=workFacts(work).pending;
+    if(unresolved.length){
+     await workEvent(taskId,'recovery-uncertain',{detail:'체크포인트 없이 중단된 미확인 실행 '+unresolved.map(x=>x.name).join(', ').slice(0,240)});
+    }
     const c=await loadConfig();const prefix=(owner?SYSTEM:SYSTEM+'\n이 이용자에게는 본인 보관함과 공개 웹 도구만 연결돼 있습니다. 다른 사용자의 PC/휴대폰/전화는 사용할 수 없습니다.')+(c.instructions?'\n사용자가 지정한 작업 원칙: '+c.instructions:'');
-    messages=[{role:'system',content:prefix},{role:'user',content:`현재 요청: ${current.title}`},...t.messages.slice(-20).map(m=>({role:m.direction==='in'?'user':'assistant',content:m.text}))];
+    messages=[{role:'system',content:prefix},{role:'user',content:`현재 요청: ${current.title}`},...(unresolved.length?[{role:'user',content:'⚠️ 이전 실행 중 미확인 작업이 남았습니다: '+unresolved.map(x=>x.name).join(', ')+'. 먼저 현재 상태를 확인하고 중복 실행을 피하세요.'}]:[]),...t.messages.slice(-20).map(m=>({role:m.direction==='in'?'user':'assistant',content:m.text}))];
     await checkpoint(taskId,messages,0,t.sender,owner);
    }
-   return await loop(taskId,t.sender,messages,owner,step);
+   return await loop(taskId,t.sender,messages,owner,step,onEvent);
   }catch(e){const message=String(e.message||e);await workEvent(taskId,'error',{detail:message.slice(0,300)}).catch(()=>{});return publish(taskId,t.sender,'진행 중 오류가 발생했습니다: '+message.slice(0,450),'failed');}
  });
 }
 export async function processOwnerTask(taskId){const task=await getTask(taskId),t=task&&await getThread(task.threadId);if(!t||!await isOwner(t.sender))throw Error('소유자만 PC 도구를 사용할 수 있습니다.');return processInboundTask(taskId);}
-export async function handleApproval(sender,text){const match=/^(승인|거절|답변)\s+([0-9a-f]{10})(?:\s+([\s\S]+))?$/i.exec(String(text||'').trim());if(!match)return {consumed:false};
- if(!await isOwner(sender)&&!await isRegisteredWhatsApp(sender))return {consumed:true,ok:false};
+export async function handleApproval(sender,text,{trustedLocal=false}={}){const match=/^(승인|거절|답변)\s+([0-9a-f]{10})(?:\s+([\s\S]+))?$/i.exec(String(text||'').trim());if(!match)return {consumed:false};
+ if(!trustedLocal&&!await isOwner(sender)&&!await isRegisteredWhatsApp(sender))return {consumed:true,ok:false};
  return queue(sender,async()=>{
-  const code=match[2].toUpperCase(),row=await mutatePending(rows=>{const i=rows.findIndex(x=>x.code===code&&x.recipient===String(sender).replace(/\D/g,''));return i<0?null:rows.splice(i,1)[0];});
+  const code=match[2].toUpperCase();
+  const row=await mutatePending(rows=>{
+   const i=rows.findIndex(x=>x.code===code&&x.recipient===String(sender).replace(/\D/g,''));
+   if(i<0)return null;
+   const target=rows[i];
+   // A malformed reply must never consume the saved question/approval.
+   const action=match[1].toLowerCase();
+   const compatible=target.question?(action==='거절'||(action==='답변'&&Boolean(match[3]?.trim()))):(action==='승인'||action==='거절');
+   if(!compatible&&target.expiresAt>=Date.now())return {...target,invalid:true};
+   return rows.splice(i,1)[0];
+  });
   if(!row)return {consumed:true,ok:false,reason:'요청이 만료되었거나 존재하지 않습니다.'};
+  if(row.invalid)return {consumed:true,ok:false,reason:row.question?'답변 '+code+' [내용] 형식으로 답해 주세요. 요청은 그대로 유지했습니다.':'승인 '+code+' 또는 거절 '+code+'로 답해 주세요. 요청은 그대로 유지했습니다.'};
   if(row.expiresAt<Date.now()){await setTaskStatus(row.taskId,'expired');return {consumed:true,ok:false,reason:'응답 기한이 지났습니다.'};}
   let result;
   if(row.question){if(match[1]==='거절'){await setTaskStatus(row.taskId,'blocked');const report=await publish(row.taskId,row.recipient,'사용자가 해당 결정을 보류하여 작업을 멈췄습니다.','blocked');return {consumed:true,ok:true,reason:'사용자의 요청으로 작업을 중단했습니다.',next:report.status};}
-   if(match[1]==='승인')result='사용자가 진행을 승인했습니다.';
-   else result='사용자 답변: '+String(match[3]||'').slice(0,1800);
+   result='사용자 답변: '+String(match[3]||'').slice(0,1800);
    await workEvent(row.taskId,'user-input',{detail:String(row.call.args.question||'')+' → '+result.slice(0,1500)});
   }else{
    if(match[1]==='거절'){await setTaskStatus(row.taskId,'blocked');return {consumed:true,ok:true,reason:'실행을 취소했습니다.'};}
-   if(match[1]!=='승인')return {consumed:true,ok:false,reason:'승인 또는 거절로 답해 주세요.'};
-   try{result=String(await execute(row.call,row.recipient,row.owner&&await isOwner(row.recipient))).slice(0,10000);await workEvent(row.taskId,'tool-result',{operationId:randomUUID(),name:row.call.name,ok:true,detail:result.slice(0,300)});}catch(e){result='도구 실행 실패: '+e.message;await workEvent(row.taskId,'error',{detail:result});}
+   const operationId=randomUUID();await workEvent(row.taskId,'tool-intent',{operationId,name:row.call.name});
+   await checkpoint(row.taskId,row.messages,row.step,row.recipient,row.owner,{...row.call,operationId},row.provider);
+   try{result=String(await execute(row.call,row.recipient,row.owner&&(trustedLocal||await isOwner(row.recipient)))).slice(0,10000);await workEvent(row.taskId,'tool-result',{operationId,name:row.call.name,ok:true,detail:result.slice(0,300)});}catch(e){result='도구 실행 실패: '+e.message;await workEvent(row.taskId,'tool-result',{operationId,name:row.call.name,ok:false,detail:result.slice(0,300)});}
   }
   const messages=row.messages;toolResult(messages,row.call,row.provider,result);
   await checkpoint(row.taskId,messages,row.step,row.recipient,row.owner);
   await setTaskStatus(row.taskId,'running');
-  const next=await loop(row.taskId,row.recipient,messages,row.owner&&await isOwner(row.recipient),row.step);
+  const next=await loop(row.taskId,row.recipient,messages,row.owner&&(trustedLocal||await isOwner(row.recipient)),row.step);
   return {consumed:true,ok:true,reason:'응답을 받아 업무를 이어갔습니다.',next:next.status};
  });
 }
 export async function operatorPending(){const rows=await readPending();return rows.filter(x=>x.expiresAt>Date.now()).map(x=>({code:x.code,tool:x.call.name,args:x.call.args,taskId:x.taskId,expiresAt:x.expiresAt,recipient:'***'+x.recipient.slice(-4)}));}
-export async function recoverInterruptedTasks(){const d=await getDashboard();for(const t of d.tasks){const work=await getWork(t.id);if(work.report&&!work.delivered){void retryWorkReport(t.id).catch(e=>console.error('보고 재전송 실패:',e.message));continue;}
-  if(t.status!=='running')continue;if(!work.checkpoint)continue;
-  void processInboundTask(t.id).catch(e=>console.error('중단 업무 복구 실패:',e.message));
- }}
+export async function recoverInterruptedTasks(){
+ const d=await getDashboard();
+ for(const task of d.tasks.slice().reverse()){
+  const work=await getWork(task.id);
+  if(work.report&&!work.delivered){void retryWorkReport(task.id).catch(e=>console.error('보고 재전송 실패:',e.message));continue;}
+  if(task.status==='received'&&task.channel==='whatsapp'&&d.settings.autoDraft){
+   void processInboundTask(task.id).catch(e=>console.error('수신 대기 업무 복구 실패:',e.message));
+   continue;
+  }
+  if(task.status!=='running')continue;
+  // processInboundTask recreates the original context if there is no checkpoint.
+  // An unacknowledged side effect is preserved as uncertain rather than replayed.
+  void processInboundTask(task.id).catch(e=>console.error('중단 업무 복구 실패:',e.message));
+ }
+}
 export async function resumePausedTask(taskId,sender){const t=await getTask(taskId),thread=t&&await getThread(t.threadId);if(!t||thread.sender!==sender||t.status!=='paused')throw Error('재개할 업무가 없습니다.');const w=await getWork(taskId);if(!w.checkpoint)throw Error('작업 상태가 없습니다.');await setTaskStatus(taskId,'running');return processInboundTask(taskId);}
+
+/** The desktop chat uses the same operator, ledger, checkpoints and reporting engine
+ * as WhatsApp. It is called only from the localhost-authenticated API route. */
+export const LOCAL_SENDER='999999999999999';
+export function localOperatorBusy(){return queues.has(LOCAL_SENDER);}
+export async function runLocalOperator({text,config={},emit=()=>{}}){
+ const input=String(text||'').trim();if(!input||input.length>5000)throw Error('명령은 1~5,000자 이내여야 합니다.');
+ const updates={};for(const k of ['provider','base','model','key'])if(typeof config[k]==='string'&&config[k].trim())updates[k]=config[k];
+ if(Object.keys(updates).length)await saveConfig(updates);
+ const matched=/^(승인|거절|답변)\s+([0-9a-f]{10})(?:\s+[\s\S]+)?$/i.test(input);
+ if(matched){
+  const answer=await handleApproval(LOCAL_SENDER,input,{trustedLocal:true});
+  if(answer.consumed){const response=answer.reason||'요청을 처리했습니다.';emit({type:'answer',text:response});emit({type:'done'});return answer;}
+ }
+ const item=await receiveMessage({channel:'test',sender:LOCAL_SENDER,text:input});
+ const outcome=await processInboundTask(item.taskId,{trustedLocal:true,onEvent:emit});
+ const thread=await getThread(item.threadId);
+ const final=outcome.report||thread.messages.filter(m=>m.direction==='out').at(-1)?.text||outcome.status;
+ emit({type:'answer',text:String(final||'작업 상태를 확인해 주세요.')});emit({type:'done'});
+ return outcome;
+}

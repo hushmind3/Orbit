@@ -34,6 +34,8 @@ test('owner WhatsApp-like task -> model tool -> approval -> actual execution -> 
   assert.equal((await handleApproval('821099999999','승인 '+pending[0].code)).ok,false);
   assert.equal((await handleApproval('821012345678','승인 ABCD123456')).ok,false);
   assert.equal((await getTask(got.taskId)).status,'awaiting_input');
+  const wrong=await handleApproval('821012345678','답변 '+pending[0].code+' 네');assert.equal(wrong.ok,false);
+  assert.equal((await operatorPending()).length,1);
   const accepted=await handleApproval('821012345678','승인 '+pending[0].code);
   assert.equal(accepted.ok,true);assert.equal((await getTask(got.taskId)).status,'reported');
   assert.equal((await operatorPending()).length,0);

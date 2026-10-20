@@ -22,7 +22,9 @@ process.env.WA_VERIFY_TOKEN='mock-challenge';
 process.env.ORBIT_REQUIRE_SMS='0';
 const owner='821077778888';
 let callNumber=0;
-const model=createServer(async(req,res)=>{for await(const _ of req){};callNumber++;
+const model=createServer(async(req,res)=>{let raw='';for await(const chunk of req)raw+=chunk;const data=JSON.parse(raw);
+ if(data.messages?.[0]?.content?.includes('# ORBIT_GOAL_AUDIT')){res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({verified:true,reason:'메모 저장 결과를 확인'})}}]}));return;}
+ callNumber++;
  const answer=callNumber===1?{tool_calls:[{id:'step-one',function:{name:'remember',arguments:JSON.stringify({note:'통화 고객센터 메모'})}}]}:
  {tool_calls:[{id:'step-two',function:{name:'finish_task',arguments:JSON.stringify({status:'completed',summary:'요청하신 메모를 보관했습니다.'})}}]};
  res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({choices:[{message:answer}]}));

@@ -6,7 +6,7 @@ import {promisify} from 'node:util';
 import {adbExecutable} from './mobile.js';
 
 const exec = promisify(execFile);
-const dataFile=path.resolve('.runtime','cases.json');
+const dataFile=()=>process.env.ORBIT_CASES_PATH||path.resolve('.runtime','cases.json');
 const sessions=new Map();
 const sessionsFile=()=>process.env.ORBIT_CALL_SESSIONS_PATH||path.resolve('.runtime','call-sessions.json');
 let sessionsWrite=Promise.resolve();
@@ -17,8 +17,8 @@ let casesLock=Promise.resolve();
 const clamp=(v,n=1000)=>typeof v==='string'?v.trim().slice(0,n):'';
 const e164=/^\+[1-9]\d{6,14}$/;
 const xml=(s)=>String(s).replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&apos;'}[c]));
-async function load(){try{return JSON.parse(await fs.readFile(dataFile,'utf8'));}catch(e){if(e.code==='ENOENT')return [];throw e;}}
-async function save(rows){await fs.mkdir(path.dirname(dataFile),{recursive:true});const tmp=dataFile+'.tmp';await fs.writeFile(tmp,JSON.stringify(rows,null,2));await fs.rename(tmp,dataFile);}
+async function load(){try{return JSON.parse(await fs.readFile(dataFile(),'utf8'));}catch(e){if(e.code==='ENOENT')return [];throw e;}}
+async function save(rows){await fs.mkdir(path.dirname(dataFile()),{recursive:true});const tmp=dataFile()+'.tmp';await fs.writeFile(tmp,JSON.stringify(rows,null,2));await fs.rename(tmp,dataFile());}
 async function transact(fn){const run=casesLock.then(async()=>{const rows=await load();const result=await fn(rows);await save(rows);return result;});casesLock=run.catch(()=>{});return run;}
 export const newCase=async (input)=>transact(async rows=>{
  const item={id:randomUUID(),created:new Date().toISOString(),name:clamp(input.name,100)||'새 상담',number:clamp(input.number,35),goal:clamp(input.goal,1200),facts:clamp(input.facts,2500),limits:clamp(input.limits,1600),turns:[],status:'draft'};

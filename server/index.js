@@ -3,12 +3,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {approve,pendingCount,isBusy,runAgent} from './agent.js';
+// All interactive work is dispatched through the operator, not a second agent loop.
 import {store} from './store.js';
 import {newCase,listCases,findCase,processTurn,callInfo,startCall,validateWebhook,twilioTurn,twilioStatus,adbDevices,adbDial,duplicatePhotos} from './negotiation.js';
-import {getDashboard,getThread,receiveMessage,generateDraft,updateSettings,updateTask,sendReply,sendWhatsApp,verifyWhatsApp,whatsappChallenge,parseWhatsApp} from './inbox.js';
+import {getDashboard,getThread,clearConversation,receiveMessage,generateDraft,updateSettings,updateTask,sendReply,sendWhatsApp,verifyWhatsApp,whatsappChallenge,parseWhatsApp} from './inbox.js';
 import {createJoinSession,sessionStatus,consumeJoinMessage,completeDemo,getOnboardingStats,onboardingConfig,isRegisteredWhatsApp,startSms,checkSms} from './onboarding.js';
-import {isOwner,processOwnerTask,processInboundTask,handleApproval,operatorConfig,operatorPending,recoverInterruptedTasks,resumePausedTask} from './operator.js';
+import {isOwner,processOwnerTask,processInboundTask,handleApproval,operatorConfig,operatorPending,recoverInterruptedTasks,resumePausedTask,runLocalOperator,localOperatorBusy,LOCAL_SENDER} from './operator.js';
 import {getWork} from './work-ledger.js';
 import {saveConfig,loadConfig} from './config.js';
 import {bootstrapConnectors,connectorSummary,updateConnectors} from './connectors.js';
@@ -155,7 +155,7 @@ async function handle(req,res) {
         const b=await body(req);
         const received=await receiveMessage({channel:'test',sender:String(b.sender||'owner-test'),text:b.text});
         const state=await getDashboard();
-        if(state.settings.autoDraft&&received.taskId)void generateDraft(received.taskId);
+        if(state.settings.autoDraft&&received.taskId)void processInboundTask(received.taskId).catch(e=>console.error('운영실 시연 업무 오류:',e.message));
         return json(res,201,received);
       }
       if(req.method==='POST'&&url.pathname==='/api/admin/send')return json(res,200,await sendReply(await body(req)));
@@ -165,8 +165,12 @@ async function handle(req,res) {
         const b=await body(req);const id=String(b.id||'');if(!id)return json(res,400,{error:'작업 ID 필요'});
         void generateDraft(id);return json(res,202,{ok:true});
       }
-      if (req.method==='GET' && url.pathname==='/api/health') return json(res,200,{ok:true,busy:isBusy(),approvals:pendingCount(),platform:process.platform});
-      if (req.method==='GET' && url.pathname==='/api/history') return json(res,200,{items:await store.history(),notes:await store.notes()});
+      if (req.method==='GET' && url.pathname==='/api/health') return json(res,200,{ok:true,busy:localOperatorBusy(),approvals:(await operatorPending()).length,platform:process.platform});
+      if (req.method==='GET' && url.pathname==='/api/history') {
+        const d=await getDashboard(),t=d.threads.find(x=>x.channel==='test'&&x.sender===LOCAL_SENDER);
+        const thread=t?await getThread(t.id):null;
+        return json(res,200,{items:(thread?.messages||[]).map(m=>({role:m.direction==='in'?'user':'assistant',content:m.text})),notes:await store.notes()});
+      }
       if (req.method==='GET' && url.pathname==='/api/models') {
         try {
           const host=url.searchParams.get('host') || 'http://127.0.0.1:11434';
@@ -192,18 +196,17 @@ async function handle(req,res) {
       }
       if(req.method==='POST'&&url.pathname==='/api/photos/duplicates')return json(res,200,await duplicatePhotos());
       if(req.method==='POST' && url.pathname==='/api/approval') {
-        const b=await body(req); return json(res,200,{ok:approve(b.id,b.allow===true)});
+        return json(res,410,{error:'기존 세션 승인 API는 새 에이전트에서 사용하지 않습니다. 대화창에서 승인 코드로 답하세요.'});
       }
       if(req.method==='POST' && url.pathname==='/api/clear') {
-        if(isBusy()) return json(res,409,{error:'진행 중인 작업을 먼저 완료하세요.'});
-        await store.clearHistory();return json(res,200,{ok:true});
+        if(localOperatorBusy())return json(res,409,{error:'작업 진행 중입니다.'});
+        await clearConversation('test',LOCAL_SENDER);await store.clearHistory();return json(res,200,{ok:true});
       }
       if(req.method==='POST' && url.pathname==='/api/message') {
-        if(isBusy()) return json(res,409,{error:'이전 작업이 아직 진행 중입니다.'});
         const b=await body(req);
         res.writeHead(200,{'Content-Type':'application/x-ndjson; charset=utf-8','Cache-Control':'no-cache, no-transform','X-Content-Type-Options':'nosniff'});
         const emit=x=>{if(!res.writableEnded&&!res.destroyed)res.write(JSON.stringify(x)+'\n');};
-        try {await runAgent({text:b.text,config:b.config||{},emit});}
+        try {await runLocalOperator({text:b.text,config:b.config||{},emit});}
         catch(e) {emit({type:'error',text:String(e.message)});emit({type:'done'});}
         res.end();return;
       }
