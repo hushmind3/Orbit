@@ -8,8 +8,10 @@ import path from 'node:path';
 
 const headers={'Content-Type':'application/json','X-Orbit-Agent':'1'};
 const root=path.resolve(import.meta.dirname,'..');
+const PORT=49800+(process.pid%900);
+const url=`http://127.0.0.1:${PORT}`;
 
-test('real chat -> Ollama tool call -> approve -> save memory -> final answer', {timeout:17000}, async()=>{
+test('real chat -> Ollama tool call -> autonomous note -> final answer', {timeout:17000}, async()=>{
   let callCount=0;
   const mock=createServer(async(req,res)=>{
     let input='';for await(const part of req)input+=part.toString();
@@ -28,16 +30,16 @@ test('real chat -> Ollama tool call -> approve -> save memory -> final answer', 
   });
   await new Promise(resolve=>mock.listen(0,'127.0.0.1',resolve));
   const fakePort=mock.address().port;
-  const processServer=spawn('node',['server/index.js'],{cwd:root,stdio:['ignore','pipe','pipe']});
+  const processServer=spawn('node',['server/index.js'],{cwd:root,env:{...process.env,ORBIT_PORT:String(PORT),ORBIT_OPEN_BROWSER:'0'},stdio:['ignore','pipe','pipe']});
   let errors='';processServer.stderr.on('data',chunk=>{errors+=chunk.toString();});
   try{
     let healthy=false;
     for(let i=0;i<35;i++){
       await delay(100);
-      try{const r=await fetch('http://127.0.0.1:4786/api/health',{headers});if(r.ok){healthy=true;break;}}catch{}
+      try{const r=await fetch(url+'/api/health',{headers});if(r.ok){healthy=true;break;}}catch{}
     }
     assert.ok(healthy,`server did not start: ${errors}`);
-    const r=await fetch('http://127.0.0.1:4786/api/message',{
+    const r=await fetch(url+'/api/message',{
       method:'POST',headers,body:JSON.stringify({text:'기억해 줘: 시범 기능 점검',config:{provider:'ollama',base:`http://127.0.0.1:${fakePort}`,model:'test-model'}})
     });
     assert.equal(r.status,200);
@@ -49,18 +51,18 @@ test('real chat -> Ollama tool call -> approve -> save memory -> final answer', 
         const msg=JSON.parse(line);results.push(msg);
         if(msg.type==='approval'){
           gotApproval=true;
-          const approve=await fetch('http://127.0.0.1:4786/api/approval',{method:'POST',headers,body:JSON.stringify({id:msg.id,allow:true})});
+          const approve=await fetch(url+'/api/approval',{method:'POST',headers,body:JSON.stringify({id:msg.id,allow:true})});
           assert.deepEqual(await approve.json(),{ok:true});
         }
         if(msg.type==='answer'){gotAnswer=true;assert.equal(msg.text,'메모를 저장했습니다.');}
       }
     }
-    assert.ok(gotApproval);assert.ok(gotAnswer);assert.equal(callCount,2);
+    assert.equal(gotApproval,false,'routine note-taking should require no approval');assert.ok(gotAnswer);assert.equal(callCount,2);
     assert.ok(results.some(x=>x.type==='tool_result'&&x.tool==='remember'));
-    const history=await (await fetch('http://127.0.0.1:4786/api/history',{headers})).json();
+    const history=await (await fetch(url+'/api/history',{headers})).json();
     assert.ok(history.notes.some(x=>x.note==='시범 기능 점검'));
     assert.ok(history.items.some(x=>x.content==='메모를 저장했습니다.'));
-    const noHeader=await fetch('http://127.0.0.1:4786/api/history');assert.equal(noHeader.status,403);
+    const noHeader=await fetch(url+'/api/history');assert.equal(noHeader.status,403);
   }finally{
     processServer.kill();await new Promise(resolve=>mock.close(resolve));
   }

@@ -16,7 +16,8 @@ import {checkConnections} from './diagnostics.js';
 
 const ROOT=path.resolve(fileURLToPath(new URL('..',import.meta.url)));
 const DIST=path.join(ROOT,'dist');
-const PORT=4786;
+const PORT=Number(process.env.ORBIT_PORT||4786);
+if(!Number.isInteger(PORT)||PORT<1||PORT>65535)throw Error('ORBIT_PORT는 1~65535 범위여야 합니다.');
 await bootstrapConnectors();
 const joinAttempts=new Map();
 function joinAllowed(remote){const key=String(remote||'unknown');const now=Date.now();const recent=(joinAttempts.get(key)||[]).filter(t=>now-t<15*60*1000);if(recent.length>=5){joinAttempts.set(key,recent);return false;}recent.push(now);joinAttempts.set(key,recent);if(joinAttempts.size>1000)for(const [k,ts] of joinAttempts){if(ts.every(t=>now-t>15*60*1000))joinAttempts.delete(k);}return true;}
@@ -27,9 +28,9 @@ async function body(req){return JSON.parse(await rawBody(req));}
 function authorized(req) {
   const origin=req.headers.origin;
   const fromLocal=/^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(String(req.socket.remoteAddress));
-  const localHost=/^(?:127\.0\.0\.1|localhost):4786$/.test(String(req.headers.host||''));
+  const localHost=new RegExp(`^(?:127\\.0\\.0\\.1|localhost):${PORT}$`).test(String(req.headers.host||''));
   const notProxied=!req.headers['x-forwarded-for']&&!req.headers['forwarded'];
-  const localOrigin=!origin||/^http:\/\/(?:127\.0\.0\.1|localhost):(?:4786|5173)$/.test(origin);
+  const localOrigin=!origin||origin===`http://127.0.0.1:${PORT}`||origin===`http://localhost:${PORT}`||/^http:\/\/(?:127\.0\.0\.1|localhost):5173$/.test(origin);
   if(fromLocal&&localHost&&notProxied&&localOrigin&&req.headers['x-orbit-agent']==='1')return true;
   const pair=process.env.ORBIT_PAIRING_TOKEN;
   const matchingOrigin=!origin||origin===`http://${req.headers.host}`||origin===`https://${req.headers.host}`;

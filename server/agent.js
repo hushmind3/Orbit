@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import {definitions, permissionRequired, runTool, toolMap} from './tools.js';
+import {definitions, runTool, toolMap} from './tools.js';
+import {needsTaskApproval} from './approval-policy.js';
 import {store} from './store.js';
 
 const SYSTEM = `당신은 Windows 컴퓨터에서 실제로 도구를 실행하는 개인 AI 비서 Orbit입니다.
@@ -7,7 +8,7 @@ const SYSTEM = `당신은 Windows 컴퓨터에서 실제로 도구를 실행하�
 명령이 필요하면 도구를 사용하고, 직접 실행하지 않은 일은 했다고 말하지 마세요.
 사이트를 읽은 뒤 클릭/입력이 필요하면 browser_read로 내용을 먼저 확인하세요.
 결제·개인정보 전송·메시지 발송은 구현되지 않았으므로 성공한 것처럼 말하지 마세요.
-위험한 도구는 사용자가 화면에서 승인하거나 거부합니다. 승인을 건너뛰려 하지 마세요.
+일반적인 웹 탐색, 클릭, 입력, 메모 작업은 지시받은 업무 범위에서 자율적으로 진행합니다. 구매·계약·제출·삭제·권리 포기 등 중요한 결정을 확정하는 행동만 별도 승인을 요청하세요. 도구 실행 뒤 실제 결과를 확인하세요.
 명시적 메모 요청일 때만 remember를 사용합니다. 실행 결과는 요약해서 보고하세요.`;
 
 const approvalCallbacks = new Map();
@@ -68,8 +69,9 @@ export async function runAgent({text,config,emit}) {
     const history=(await store.history()).slice(-26).map(x=>({role:x.role,content:x.content}));
     const memory=notes.length?'\n기억: '+notes.map(x=>x.note).join(' | ').slice(0,4000):'';
     let messages=[{role:'system',content:SYSTEM+memory},...history];
-    for (let round=0;round<8;round++) {
-      emit({type:'status',text:`AI 판단 중 · ${round+1}/8`});
+    const maxSteps=Math.max(12,Math.min(60,Number(process.env.ORBIT_MAX_STEPS)||40));
+    for (let round=0;round<maxSteps;round++) {
+      emit({type:'status',text:`AI 판단 중 · ${round+1}/${maxSteps}`});
       const {provider,message}=await askModel(config,messages);
       const calls=normalizeToolCalls(message,provider);
       if (!calls.length) {
@@ -86,7 +88,7 @@ export async function runAgent({text,config,emit}) {
         if (!valid) outcome='지원하지 않는 도구입니다.';
         else {
           emit({type:'status',text:`도구: ${call.name}`,args:call.args});
-          if (permissionRequired.has(call.name)) {
+          if (await needsTaskApproval(call)) {
             const allowed=await requestApproval(call.name,call.args,emit);
             if (!allowed) outcome='사용자가 실행을 거부했거나 2분 안에 승인하지 않았습니다.';
           }
@@ -101,7 +103,7 @@ export async function runAgent({text,config,emit}) {
         else messages.push({role:'tool',tool_name:call.name,content:result});
       }
     }
-    const answer='도구 실행 8회차에 도달했습니다. 여기까지 진행한 내역을 확인해 주세요.';
+    const answer=`업무 실행 상한 ${maxSteps}단계에 도달했습니다. 작업 완료 여부를 확인하지 못했습니다.`;
     await store.push('assistant',answer);emit({type:'answer',text:answer});emit({type:'done'});
   } finally { busy=false; }
 }

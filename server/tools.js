@@ -204,3 +204,16 @@ export async function runTool(name, args, { store }) {
 }
 
 export { safety, validUrl, scanTree };
+
+/** Inspect visible browser controls instead of treating all clicks as dangerous. */
+export async function inspectBrowserTarget(name,args={}){
+ const p=await page();
+ let locator;
+ if(name==='browser_click')locator=typeof args.selector==='string'&&args.selector.trim()?p.locator(args.selector).first():p.getByText(String(args.text||''),{exact:false}).first();
+ if(name==='browser_press')locator=p.locator(':focus');
+ const label=locator?await locator.evaluate(el=>[
+  el.innerText||'',el.getAttribute('aria-label')||'',el.getAttribute('title')||'',el.getAttribute('value')||'',el.getAttribute('type')||''
+ ].join(' ').slice(0,400)).catch(()=>''):'';
+ const context=await p.locator('body').innerText({timeout:3000}).then(t=>t.slice(0,5000)).catch(()=>'');
+ return {label:label||String(args.text||args.selector||args.key||''),context};
+}

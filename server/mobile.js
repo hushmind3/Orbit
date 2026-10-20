@@ -86,3 +86,20 @@ export async function inspectMobileVision(config){
  const result=j.choices?.[0]?.message?.content;if(!result)throw Error('모델이 화면을 인식하지 못했습니다. 비전 지원 모델인지 확인하세요.');
  return String(result).slice(0,9000);
 }
+
+/** Find the on-screen element for a proposed tap before it is executed. */
+export async function inspectMobileTarget(x,y){
+ const serial=await device();const px=Number(x),py=Number(y);
+ if(!Number.isInteger(px)||!Number.isInteger(py))throw Error('좌표 오류');
+ const args=['-s',serial,'shell'];
+ await command([...args,'uiautomator','dump','/sdcard/orbit-ui.xml'],20000);
+ const xml=await command([...args,'cat','/sdcard/orbit-ui.xml'],10000,450000);
+ const nodes=[...xml.matchAll(/<node\b[^>]*>/g)].map(m=>{
+  const el=m[0], b=/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(el);
+  const label=[...el.matchAll(/(?:text|content-desc)="([^"]*)"/g)].map(v=>v[1]).filter(Boolean).join(' ');
+  return {label,b:b&&b.slice(1).map(Number)};
+ }).filter(n=>n.b);
+ const active=nodes.filter(n=>px>=n.b[0]&&px<=n.b[2]&&py>=n.b[1]&&py<=n.b[3]);
+ active.sort((a,b)=>(a.b[2]-a.b[0])*(a.b[3]-a.b[1])-(b.b[2]-b.b[0])*(b.b[3]-b.b[1]));
+ return {label:active.map(n=>n.label).filter(Boolean).slice(0,3).join(' '),context:nodes.map(n=>n.label).filter(Boolean).join(' ').slice(0,6000)};
+}

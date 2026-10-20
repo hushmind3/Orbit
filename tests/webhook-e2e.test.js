@@ -8,6 +8,7 @@ import {createHmac} from 'node:crypto';
 import {saveConfig} from '../server/config.js';
 import {receiveMessage} from '../server/inbox.js';
 const root=path.join(os.tmpdir(),'orbit-webhook-end2end-'+process.pid);
+process.env.ORBIT_PORT=String(49100+(process.pid%900));
 process.env.ORBIT_REQUIRE_SMS='0'; // Explicit isolated test only, not public production.
 process.env.ORBIT_ONBOARDING_PATH=path.join(root,'join.json');
 process.env.ORBIT_CONFIG_PATH=path.join(root,'model.json');
@@ -32,7 +33,7 @@ test('HTTP QR -> signed Meta signup -> verified account -> real model auto respo
  };
  const {server}=await import('../server/index.js');
  try{
-  const url='http://127.0.0.1:4786';
+  const url=`http://127.0.0.1:${process.env.ORBIT_PORT}`;
   const qrPage=await old(url+'/join');assert.equal(qrPage.status,200);assert.match(await qrPage.text(),/QR/);
   const config=await (await old(url+'/onboarding/config')).json();assert.equal(config.ready,true);
   const created=await old(url+'/onboarding/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'실제 흐름 테스트'})});assert.equal(created.status,201);
