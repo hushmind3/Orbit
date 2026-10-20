@@ -2,13 +2,13 @@ import {createHmac,timingSafeEqual,randomUUID} from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const dataPath=path.resolve(process.cwd(),'.runtime','inbox.json');
-const empty=()=>({threads:[],tasks:[],events:[],settings:{autoDraft:true,autoSend:false}});
+const dataPath=()=>process.env.ORBIT_INBOX_PATH||path.resolve(process.cwd(),'.runtime','inbox.json');
+const empty=()=>({threads:[],tasks:[],events:[],seenMessages:[],settings:{autoDraft:true,autoSend:false}});
 let writeChain=Promise.resolve();
 let processing=new Set();
 const now=()=>new Date().toISOString();
-async function read(){try{const data=JSON.parse(await fs.readFile(dataPath,'utf8'));return {...empty(),...data,settings:{...empty().settings,...data.settings}};}catch{return empty();}}
-async function modify(fn){const job=writeChain.then(async()=>{const d=await read();const result=await fn(d);await fs.mkdir(path.dirname(dataPath),{recursive:true});const tmp=dataPath+'.tmp';await fs.writeFile(tmp,JSON.stringify(d,null,2),'utf8');await fs.rename(tmp,dataPath);return result;});writeChain=job.catch(()=>{});return job;}
+async function read(){try{const data=JSON.parse(await fs.readFile(dataPath(),'utf8'));return {...empty(),...data,settings:{...empty().settings,...data.settings}};}catch(e){if(e.code==='ENOENT')return empty();throw e;}}
+async function modify(fn){const job=writeChain.then(async()=>{const d=await read();const result=await fn(d);await fs.mkdir(path.dirname(dataPath()),{recursive:true});const tmp=dataPath()+'.tmp';await fs.writeFile(tmp,JSON.stringify(d,null,2),'utf8');await fs.rename(tmp,dataPath());return result;});writeChain=job.catch(()=>{});return job;}
 function log(d,event,description){d.events.unshift({id:randomUUID(),time:now(),event,description:String(description).slice(0,300)});d.events=d.events.slice(0,120);}
 const channelIds=['test','whatsapp','imessage'];
 const textLimit=(s,n)=>String(s??'').trim().slice(0,n);
@@ -19,8 +19,10 @@ export async function receiveMessage({channel='test',sender='local-test',text,me
  const who=textLimit(sender,120);if(!who)throw new Error('발신자가 없습니다.');
  return modify(d=>{
   let t=d.threads.find(x=>x.channel===channel&&x.sender===who);
+  if(messageId && (d.seenMessages||[]).includes(`${channel}:${who}:${messageId}`))return {threadId:t?.id||null,duplicate:true};
   if(messageId&&t?.messages.some(m=>m.externalId===messageId))return {threadId:t.id,duplicate:true};
   if(!t){t={id:randomUUID(),channel,sender:who,createdAt:now(),updatedAt:now(),messages:[]};d.threads.unshift(t);}
+  if(messageId){d.seenMessages.push(`${channel}:${who}:${messageId}`);d.seenMessages=d.seenMessages.slice(-5000);}
   const msg={id:randomUUID(),externalId:messageId||null,direction:'in',text:message,time:now(),status:'received'};
   t.messages.push(msg);t.messages=t.messages.slice(-120);t.updatedAt=now();
   const task={id:randomUUID(),threadId:t.id,messageId:msg.id,title:textLimit(message,90),channel,kind:workIntent(message)?'action':'conversation',status:'received',createdAt:now(),updatedAt:now(),draft:''};

@@ -1,9 +1,9 @@
 {
-  "name": "voice-agent-windows",
-  "version": "0.3.0",
+  "name": "orbit-assistant",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
-  "description": "Orbit messaging-first AI operator with WhatsApp QR onboarding, operator dashboard, calls and tools",
+  "description": "Orbit WhatsApp AI agent with phone negotiation, verified signup, model routing, PC and Android tools",
   "engines": {
     "node": ">=22"
   },
@@ -12,7 +12,8 @@
     "server": "node server/index.js",
     "build": "tsc --noEmit && vite build",
     "start": "node server/index.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "android:setup": "node scripts/install-android-tools.js"
   },
   "dependencies": {
     "playwright-core": "^1.55.0",

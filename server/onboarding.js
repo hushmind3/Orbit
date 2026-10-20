@@ -9,22 +9,23 @@ let writeQueue = Promise.resolve();
 const cleanNumber = value => String(value || '').replace(/[^0-9]/g, '');
 function configuredNumber(){return cleanNumber(process.env.WA_BUSINESS_NUMBER || '');}
 function smsReady(){return Boolean(process.env.TWILIO_VERIFY_SERVICE_SID && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN);}
+function smsMandatory(){return process.env.ORBIT_REQUIRE_SMS!=='0';}
 function validPhone(v){return /^\+[1-9]\d{7,14}$/.test(String(v||''));}
 function gatewayReady(){return Boolean(configuredNumber() && process.env.WA_APP_SECRET && process.env.WA_VERIFY_TOKEN && process.env.WA_PHONE_NUMBER_ID && process.env.WA_ACCESS_TOKEN);}
 async function readDB(){try{return {...fresh(),...JSON.parse(await fs.readFile(DB(),'utf8'))};}catch(e){if(e.code==='ENOENT')return fresh();throw e;}}
 async function transact(fn){const p = writeQueue.then(async()=>{const state=await readDB();const result=await fn(state);await fs.mkdir(path.dirname(DB()),{recursive:true});await fs.writeFile(DB()+'.tmp', JSON.stringify(state,null,2));await fs.rename(DB()+'.tmp',DB());return result;});writeQueue=p.catch(()=>{});return p;}
-export function onboardingConfig(){return {channel:'whatsapp',ready:gatewayReady(),smsReady:smsReady(),phoneNumberConfigured:Boolean(configuredNumber()),note:gatewayReady()?'WhatsApp Business API 연동 설정됨':'Meta WhatsApp Business Cloud API 번호·인증키·웹훅 연결 필요'};}
-export async function createJoinSession({demo=false,phone=''}={}){
+export function onboardingConfig(){const ready=gatewayReady()&&(!smsMandatory()||smsReady());return {channel:'whatsapp',ready,metaConfigured:gatewayReady(),smsReady:smsReady(),smsRequired:smsMandatory(),phoneNumberConfigured:Boolean(configuredNumber()),note:ready?'연동 키 입력됨 · 실제 연결 상태는 관리자 진단에서 검사하세요.':gatewayReady()?'SMS 인증용 Twilio Verify 계정을 연결해야 가입이 활성화됩니다.':'Meta WhatsApp Business Cloud API 번호·인증키·웹훅 연결 필요'};}
+export async function createJoinSession({demo=false,phone='',name='',email=''}={}){
  const isDemo=Boolean(demo);
  const businessNumber=configuredNumber();
  const id=randomUUID();const code=randomBytes(12).toString('hex');
  const createdAt=Date.now(),expiresAt=createdAt+MAX_AGE;
- const smsRequired=smsReady();if(!isDemo&&gatewayReady()&&smsRequired&&!validPhone(phone))throw new Error('전화번호를 +82... 형식으로 입력하세요.');
- const status=isDemo?'demo_waiting':(!gatewayReady()?'unconfigured':smsRequired?'awaiting_sms':'awaiting_whatsapp');
+ const smsRequired=smsMandatory();if(!isDemo&&gatewayReady()&&smsReady()&&smsRequired&&!validPhone(phone))throw new Error('전화번호를 +82... 형식으로 입력하세요.');
+ const status=isDemo?'demo_waiting':(!onboardingConfig().ready?'unconfigured':smsRequired?'awaiting_sms':'awaiting_whatsapp');
  const link=!isDemo&&status==='awaiting_whatsapp' ? `https://wa.me/${businessNumber}?text=${encodeURIComponent(`ORBIT-START ${code}`)}` : null;
- const s={id,code,createdAt,expiresAt,status,demo:isDemo,link,from:null,messageId:null,phone:smsRequired?cleanNumber(phone):null,verifiedSms:false,smsAttempts:0,smsStartedAt:0};
+ const s={id,code,createdAt,expiresAt,status,demo:isDemo,link,from:null,messageId:null,phone:smsRequired?cleanNumber(phone):null,name:String(name||'').trim().slice(0,80),email:/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email||''))?String(email).toLowerCase().slice(0,200):'',verifiedSms:false,smsAttempts:0,smsStartedAt:0};
  await transact(db=>{db.sessions=db.sessions.filter(x=>x.expiresAt>Date.now()).slice(-99);db.sessions.push(s);});
- return {id,expiresAt,status,link,channel:'whatsapp',smsRequired,message:status==='unconfigured'?'WhatsApp Business 번호·웹훅 연결 전입니다. 실제 QR 가입은 아직 사용할 수 없습니다.':null};
+ return {id,expiresAt,status,link,channel:'whatsapp',smsRequired,message:status==='unconfigured'?onboardingConfig().note:null};
 }
 export async function sessionStatus(id){const db=await readDB();const s=db.sessions.find(x=>x.id===id);if(!s)return null;
  const status=(s.expiresAt<Date.now() && (['awaiting_whatsapp','awaiting_sms','demo_waiting'].includes(s.status)))?'expired':s.status;
@@ -40,8 +41,8 @@ export async function consumeJoinMessage({from,text,messageId}={}){
   if(!s||s.status!=='awaiting_whatsapp'||s.expiresAt<Date.now())return {consumed:true,ok:false,reason:'invalid or expired token'};
   if(s.phone && (!s.verifiedSms||s.phone!==sender))return {consumed:true,ok:false,reason:'WhatsApp sender must match verified phone'};
   const existing=db.accounts.find(x=>x.channel==='whatsapp'&&x.sender===sender);
-  if(existing){existing.lastVerifiedAt=new Date().toISOString();s.accountId=existing.id;}
-  else {const account={id:randomUUID(),channel:'whatsapp',sender,createdAt:new Date().toISOString(),lastVerifiedAt:new Date().toISOString()};db.accounts.push(account);s.accountId=account.id;}
+  if(existing){existing.lastVerifiedAt=new Date().toISOString();if(s.name)existing.name=s.name;if(s.email)existing.email=s.email;s.accountId=existing.id;}
+  else {const account={id:randomUUID(),channel:'whatsapp',sender,name:s.name||'',email:s.email||'',createdAt:new Date().toISOString(),lastVerifiedAt:new Date().toISOString()};db.accounts.push(account);s.accountId=account.id;}
   s.status='verified';s.from=sender;s.messageId=messageId;s.code='used';s.link=null;
   return {consumed:true,ok:true,accountId:s.accountId,from:sender};
  });

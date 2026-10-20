@@ -63,7 +63,7 @@ WhatsApp 고객과 연결하려면 **Meta WhatsApp Business Platform / Cloud API
 ## 5. 전화 API · 실제 고객센터 상담
 
 - Twilio Programmable Voice: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM`, `ORBIT_PUBLIC_URL` (`https://...`) 설정
-- 발신 도구: `start_customer_service_call`. 사용자 WhatsApp 승인 후 Twilio Calls REST API로 발신을 요청합니다. 업무 목표/금지 조건과 LLM 협상 응답을 통화별로 보관합니다. WhatsApp에서 발신한 경우 통화 종료 상태와 기록된 상담 내용을 해당 소유자 WhatsApp으로 전송합니다. 통화 완료 상태가 협상 성공을 의미하지는 않습니다.
+- 발신 도구: `start_customer_service_call`. 사용자 WhatsApp 승인 후 Twilio Calls REST API로 발신을 요청합니다. 업무 목표/금지 조건과 LLM 협상 응답을 통화별로 보관합니다.
 - Twilio 웹훅 서명 검증: `/twilio/voice/:id`, `/twilio/status/:id`, 공개 HTTPS URL 필요.
 - **국내 1588/1544 고객센터가 Twilio에서 연결되는 것은 보장되지 않습니다.** 통화 음질/ARS/수십 분 대기·상담원 자동 감지·양방향 실시간 오디오·재연결도 실통화 검증을 거치지 않았습니다.
 - 갤럭시 다이얼러 열기는 **자동 AI 통화가 아니라 휴대폰 전화 앱에 번호를 채우는 기능**입니다.

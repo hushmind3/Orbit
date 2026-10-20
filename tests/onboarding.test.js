@@ -9,6 +9,7 @@ import {verifyWhatsApp,whatsappChallenge,parseWhatsApp} from '../server/inbox.js
 
 const db=path.join(os.tmpdir(),`orbit-onboarding-${process.pid}-${Math.random().toString(16).slice(2)}.json`);
 process.env.ORBIT_ONBOARDING_PATH=db;
+process.env.ORBIT_REQUIRE_SMS='0';
 process.env.WA_BUSINESS_NUMBER='15551234567';
 process.env.WA_PHONE_NUMBER_ID='987654321';
 process.env.WA_ACCESS_TOKEN='test_token';

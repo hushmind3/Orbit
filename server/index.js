@@ -8,10 +8,11 @@ import {store} from './store.js';
 import {newCase,listCases,findCase,processTurn,callInfo,startCall,validateWebhook,twilioTurn,twilioStatus,adbDevices,adbDial,duplicatePhotos} from './negotiation.js';
 import {getDashboard,getThread,receiveMessage,generateDraft,updateSettings,updateTask,sendReply,sendWhatsApp,verifyWhatsApp,whatsappChallenge,parseWhatsApp} from './inbox.js';
 import {createJoinSession,sessionStatus,consumeJoinMessage,completeDemo,getOnboardingStats,onboardingConfig,isRegisteredWhatsApp,startSms,checkSms} from './onboarding.js';
-import {isOwner,processOwnerTask,handleApproval,operatorConfig,operatorPending} from './operator.js';
+import {isOwner,processOwnerTask,processInboundTask,handleApproval,operatorConfig,operatorPending} from './operator.js';
 import {saveConfig,loadConfig} from './config.js';
 import {bootstrapConnectors,connectorSummary,updateConnectors} from './connectors.js';
 import {notifyCallCompletion} from './call-notifier.js';
+import {checkConnections} from './diagnostics.js';
 
 const ROOT=path.resolve(fileURLToPath(new URL('..',import.meta.url)));
 const DIST=path.join(ROOT,'dist');
@@ -67,9 +68,7 @@ async function handle(req,res) {
       // Respond immediately to Meta; any generation is tracked in the operator dashboard.
       const state=await getDashboard();
       if(state.settings.autoDraft)for(const item of received)if(item.taskId&&!item.duplicate){
-        const thread=await getThread(item.threadId);
-        if(await isOwner(thread?.sender))void processOwnerTask(item.taskId).catch(e=>console.error('소유자 작업 실패:',e.message));
-        else void generateDraft(item.taskId).catch(e=>console.error('메시지 초안 실패:',e.message));
+        void processInboundTask(item.taskId).catch(e=>console.error('WhatsApp 작업 실패:',e.message));
       }
       return;
     }
@@ -94,7 +93,7 @@ async function handle(req,res) {
       const origin=req.headers.origin;
       if(origin && origin!==`http://${req.headers.host}` && origin!==`https://${req.headers.host}`)return json(res,403,{error:'invalid origin'});
       if(!joinAllowed(req.socket.remoteAddress))return json(res,429,{error:'연결 요청이 너무 많습니다. 15분 뒤 다시 시도해 주세요.'});
-      const data=await body(req);const item=await createJoinSession({phone:data.phone});return json(res,201,item);
+      const data=await body(req);const item=await createJoinSession({phone:data.phone,name:data.name,email:data.email});return json(res,201,item);
     }
     if(url.pathname==='/onboarding/sms/start'&&req.method==='POST'){
       const origin=req.headers.origin;if(origin&&origin!==`http://${req.headers.host}`&&origin!==`https://${req.headers.host}`)return json(res,403,{error:'invalid origin'});
@@ -117,13 +116,15 @@ async function handle(req,res) {
       if(!item || item.status!=='awaiting_whatsapp')return json(res,404,{error:'QR unavailable'});
       const data=await (await import('./onboarding.js')).getJoinLink(id);
       if(!data)return json(res,404,{error:'QR link expired'});
-      const qrcode=await import('qrcode');const svg=await qrcode.default.toString(data,{type:'svg',margin:2,width:320,errorCorrectionLevel:'M'});
+      let qrcode;try{qrcode=await import('qrcode');}catch(e){return json(res,503,{error:'QR 라이브러리가 설치되지 않았습니다. 저장소에서 npm install을 실행하세요.'});}
+      const svg=await qrcode.default.toString(data,{type:'svg',margin:2,width:320,errorCorrectionLevel:'M'});
       res.writeHead(200,{'Content-Type':'image/svg+xml; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'"});res.end(svg);return;
     }
     if (url.pathname.startsWith('/api/')) {
       if(!authorized(req)) return json(res,403,{error:'로컬 Orbit 화면에서만 접근 가능합니다.'});
       if(req.method==='GET'&&url.pathname==='/api/admin/state')return json(res,200,await getDashboard());
       if(req.method==='GET'&&url.pathname==='/api/admin/onboarding')return json(res,200,await getOnboardingStats());
+      if(req.method==='POST'&&url.pathname==='/api/admin/diagnostics')return json(res,200,await checkConnections());
       if(req.method==='GET'&&url.pathname==='/api/admin/operator')return json(res,200,{model:await operatorConfig(),approvals:await operatorPending()});
       if(req.method==='POST'&&url.pathname==='/api/admin/operator')return json(res,200,await saveConfig(await body(req)));
       if(req.method==='GET'&&url.pathname==='/api/admin/connectors')return json(res,200,connectorSummary());
@@ -225,7 +226,7 @@ async function handle(req,res) {
     res.end(data);
   } catch(e) {if(!res.headersSent)json(res,400,{error:String(e.message)});else res.end();}
 }
-const server=http.createServer((req,res)=>{void handle(req,res);});
+export const server=http.createServer((req,res)=>{void handle(req,res);});
 server.listen(PORT,process.env.ORBIT_HOST==='0.0.0.0'?'0.0.0.0':'127.0.0.1',()=>{
   console.log(`\nOrbit 실행됨: http://127.0.0.1:${PORT}`);
   console.log(`메신저 비서 운영실: http://127.0.0.1:${PORT}/`);
